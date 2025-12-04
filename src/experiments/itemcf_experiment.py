@@ -1,253 +1,158 @@
 """
-Item-Based CF hyperparameter experiment with proper train/test split
-and bias-correct prediction.
+Hyperparameter Experiment for Item-Based Collaborative Filtering
+with Prediction Formula (Bias Reconstruction)
+
+This script:
+1. Tests combinations of:
+   - normalization: raw, mean_center, zscore
+   - similarity: cosine, pearson
+   - min_ratings: 3, 5, 10
+   - top_k: 10, 20, 40, 60
+2. Evaluates using MAE + RMSE
+3. Saves results to itemcf_results.csv
+4. Draws:
+   - RMSE vs top_k
+   - Top 10 best configurations (bar chart)
 """
 
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.metrics.pairwise import cosine_similarity
 
-from src.recommender.data_loader import load_ratings
+from src.recommender.data_loader import load_ratings, build_user_movie_matrix
 
 
 # ------------------------------------------------------------
-# Train / Test split — user-based
+# Normalization Methods
 # ------------------------------------------------------------
-def train_test_split_user(ratings: pd.DataFrame,
-                          test_ratio: float = 0.2,
-                          min_items: int = 5):
-    """
-    Splits ratings into train and test per user.
-    Only users with at least `min_items` ratings are used.
-    """
-    train_parts = []
-    test_parts = []
+def normalize_raw(mat):
+    return mat
 
-    for user, group in ratings.groupby("userId"):
-        if len(group) < min_items:
-            # too few ratings → keep all in train
-            train_parts.append(group)
-            continue
+def normalize_mean_center(mat):
+    return mat.sub(mat.mean(axis=1), axis=0).fillna(0)
 
-        group = group.sample(frac=1.0, random_state=42)  # shuffle
-        split_idx = int(len(group) * (1 - test_ratio))
-        train_parts.append(group.iloc[:split_idx])
-        test_parts.append(group.iloc[split_idx:])
-
-    train = pd.concat(train_parts).reset_index(drop=True)
-    test = pd.concat(test_parts).reset_index(drop=True) if test_parts else pd.DataFrame(columns=ratings.columns)
-
-    return train, test
-
-
-# ------------------------------------------------------------
-# Build user–movie matrix with NaNs for missing
-# ------------------------------------------------------------
-def build_user_movie_matrix_raw(ratings: pd.DataFrame) -> pd.DataFrame:
-    """
-    Pivot ratings into user×movie matrix with NaN as missing.
-    """
-    um = ratings.pivot_table(
-        index="userId",
-        columns="movieId",
-        values="rating",
-        aggfunc="mean"
-    )
-    return um
-
-
-# ------------------------------------------------------------
-# Normalization methods
-# ------------------------------------------------------------
-def normalize_raw(mat: pd.DataFrame) -> pd.DataFrame:
-    return mat.fillna(0)
-
-
-def normalize_mean_center(mat: pd.DataFrame) -> pd.DataFrame:
-    mean = mat.mean(axis=1, skipna=True)
-    centered = mat.sub(mean, axis=0)
-    return centered.fillna(0)
-
-
-def normalize_zscore(mat: pd.DataFrame) -> pd.DataFrame:
-    mean = mat.mean(axis=1, skipna=True)
-    std = mat.std(axis=1, skipna=True).replace(0, 1)
-    z = mat.sub(mean, axis=0).div(std, axis=0)
-    return z.fillna(0)
-
+def normalize_zscore(mat):
+    mean = mat.mean(axis=1)
+    std = mat.std(axis=1).replace(0, 1)
+    return mat.sub(mean, axis=0).div(std, axis=0).fillna(0)
 
 normalizers = {
     "raw": normalize_raw,
     "mean_center": normalize_mean_center,
-    "zscore": normalize_zscore,
+    "zscore": normalize_zscore
 }
 
 
 # ------------------------------------------------------------
-# Pearson similarity
+# Pearson Similarity
 # ------------------------------------------------------------
-def pearson_sim(mat_T: pd.DataFrame) -> np.ndarray:
-    """
-    mat_T: movies × users (transpose of user–movie)
-    returns: movie×movie similarity matrix values
-    """
+def pearson_sim(mat_T):
     return mat_T.T.corr().fillna(0).values
 
 
 # ------------------------------------------------------------
-# Correct ItemCF prediction with bias reconstruction
+#  ItemCF Prediction Formula
 # ------------------------------------------------------------
-def predict_rating(user_orig: pd.Series,
-                   user_norm: pd.Series,
-                   movie_id: int,
-                   item_sim: pd.DataFrame,
-                   k: int) -> float:
+def predict_rating(user_original, user_centered, movie_id, item_sim, k):
     """
-    user_orig: raw ratings for this user (NaN = no rating)
-    user_norm: normalized ratings for this user (0 when missing)
+    user_original: raw ratings (0 = missing)
+    user_centered: normalized ratings (centered or zscore)
     """
-    if movie_id not in item_sim.columns:
-        # no similarity info for this movie
-        rated_mask = user_orig.notna()
-        if rated_mask.any():
-            return user_orig[rated_mask].mean()
-        return 3.0  # fallback global-ish baseline
 
-    sims = item_sim[movie_id].drop(movie_id, errors="ignore")
+    sims = item_sim[movie_id].drop(movie_id)
+    top_k = sims.sort_values(ascending=False).head(k)
 
-    if sims.empty:
-        rated_mask = user_orig.notna()
-        if rated_mask.any():
-            return user_orig[rated_mask].mean()
-        return 3.0
+    neigh_ratings = user_centered[top_k.index]
 
-    neighbors = sims.sort_values(ascending=False).head(k)
+    # If user has no neighbors ratings, fallback
+    if np.all(neigh_ratings == 0):
+        return user_original[user_original > 0].mean()
 
-    # only neighbors the user has actually rated
-    rated_neighbors = [m for m in neighbors.index if pd.notna(user_orig.get(m))]
-    if len(rated_neighbors) == 0:
-        rated_mask = user_orig.notna()
-        if rated_mask.any():
-            return user_orig[rated_mask].mean()
-        return 3.0
+    weighted_sum = np.dot(top_k.values, neigh_ratings) / np.sum(np.abs(top_k.values))
 
-    weights = neighbors.loc[rated_neighbors]
-    ratings = user_norm.loc[rated_neighbors]
-
-    if np.all(ratings.values == 0):
-        rated_mask = user_orig.notna()
-        if rated_mask.any():
-            return user_orig[rated_mask].mean()
-        return 3.0
-
-    weighted_sum = np.dot(weights.values, ratings.values) / np.sum(np.abs(weights.values))
-
-    # reconstruct to original rating scale
-    rated_mask = user_orig.notna()
-    if rated_mask.any():
-        user_mean = user_orig[rated_mask].mean()
-    else:
-        user_mean = 3.0
-
-    return float(user_mean + weighted_sum)
+    user_mean = user_original[user_original > 0].mean()
+    return user_mean + weighted_sum
 
 
 # ------------------------------------------------------------
-# Evaluation for a single hyperparameter config
+# Evaluation Function
 # ------------------------------------------------------------
-def evaluate_itemcf(norm: str,
-                    sim_type: str,
-                    min_ratings: int,
-                    k: int,
-                    test_ratio: float = 0.2):
-    """
-    Returns (MAE, RMSE) for a given hyperparameter config.
-    Uses user-based train/test split.
-    """
+def evaluate_itemcf(norm, sim_type, min_ratings, k):
     ratings = load_ratings()
 
-    # filter movies by minimum rating count
+    # Filter movies by minimum count
     counts = ratings["movieId"].value_counts()
-    valid_movies = counts[counts >= min_ratings].index
-    ratings = ratings[ratings["movieId"].isin(valid_movies)]
+    valid_ids = counts[counts >= min_ratings].index
+    ratings = ratings[ratings["movieId"].isin(valid_ids)]
 
-    # train/test split per user
-    train, test = train_test_split_user(ratings, test_ratio=test_ratio, min_items=5)
-    if test.empty:
-        raise ValueError("Test set is empty after splitting. Check data or parameters.")
-
-    # build user–movie matrices from TRAIN only
-    raw_um = build_user_movie_matrix_raw(train)
+    raw_um = build_user_movie_matrix(ratings)
     norm_um = normalizers[norm](raw_um)
 
-    # similarity matrix
+    # Similarity matrix
     if sim_type == "cosine":
-        sim_values = cosine_similarity(norm_um.T)
+        item_sim = pd.DataFrame(
+            cosine_similarity(norm_um.T),
+            index=norm_um.columns,
+            columns=norm_um.columns
+        )
     else:
-        sim_values = pearson_sim(norm_um.T)
+        item_sim = pd.DataFrame(
+            pearson_sim(norm_um.T),
+            index=norm_um.columns,
+            columns=norm_um.columns
+        )
 
-    item_sim = pd.DataFrame(sim_values, index=norm_um.columns, columns=norm_um.columns)
-
-    # evaluation on TEST set
+    # Test sample
+    test = ratings.sample(min(1000, len(ratings)))
     y_true, y_pred = [], []
 
-    # optional: to speed up, sample subset of test
-    test_sample = test.sample(min(3000, len(test)), random_state=42)
-
-    for _, row in test_sample.iterrows():
+    for _, row in test.iterrows():
         user = row["userId"]
         movie = row["movieId"]
         true_rating = row["rating"]
-
-        if user not in raw_um.index:
-            # user has no train data (edge case)
-            continue
-        if movie not in raw_um.columns:
-            # movie not in similarity matrix
-            continue
 
         user_orig = raw_um.loc[user]
         user_norm = norm_um.loc[user]
 
         pred = predict_rating(user_orig, user_norm, movie, item_sim, k)
+
         y_true.append(true_rating)
         y_pred.append(pred)
 
-    if not y_true:
-        raise ValueError("No valid (user, movie) pairs in test after filtering.")
-
     mae = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+
     return mae, rmse
 
 
 # ------------------------------------------------------------
-# Plot helpers
+# Plots
 # ------------------------------------------------------------
-def plot_rmse_vs_k(df: pd.DataFrame):
+def plot_rmse_vs_k(df):
     combos = df[["normalization", "similarity"]].drop_duplicates()
 
-    plt.figure(figsize=(9, 5))
+    plt.figure(figsize=(10, 6))
     for _, row in combos.iterrows():
         norm = row["normalization"]
         sim = row["similarity"]
+
         subset = df[(df["normalization"] == norm) & (df["similarity"] == sim)]
         subset = subset.sort_values("top_k")
 
         plt.plot(subset["top_k"], subset["RMSE"], marker="o", label=f"{norm} + {sim}")
 
+    plt.title("ItemCF RMSE vs top_k")
     plt.xlabel("top_k (neighbors)")
     plt.ylabel("RMSE")
-    plt.title("ItemCF: RMSE vs top_k")
-    plt.grid(True)
+    plt.grid()
     plt.legend()
     plt.tight_layout()
     plt.show()
 
 
-def plot_best_configs(df: pd.DataFrame, top_n: int = 10):
+def plot_best_configs(df, top_n=10):
     best = df.sort_values("RMSE").head(top_n)
 
     labels = [
@@ -255,17 +160,17 @@ def plot_best_configs(df: pd.DataFrame, top_n: int = 10):
         for _, r in best.iterrows()
     ]
 
-    plt.figure(figsize=(9, 5))
-    plt.bar(range(len(best)), best["RMSE"])
-    plt.xticks(range(len(best)), labels, rotation=45, ha="right")
+    plt.figure(figsize=(10, 6))
+    plt.bar(range(top_n), best["RMSE"])
+    plt.xticks(range(top_n), labels, rotation=45, ha="right")
+    plt.title(f"Top {top_n} ItemCF Configurations")
     plt.ylabel("RMSE")
-    plt.title(f"Top {top_n} ItemCF configs (lower is better)")
     plt.tight_layout()
     plt.show()
 
 
 # ------------------------------------------------------------
-# MAIN
+# MAIN: Grid Search
 # ------------------------------------------------------------
 if __name__ == "__main__":
     results = []
@@ -274,8 +179,10 @@ if __name__ == "__main__":
         for sim in ["cosine", "pearson"]:
             for min_r in [3, 5, 10]:
                 for k in [10, 20, 40, 60]:
-                    mae, rmse = evaluate_itemcf(norm, sim, min_r, k, test_ratio=0.2)
-                    print(f"{norm} + {sim}, min={min_r}, k={k} → MAE={mae:.4f}  RMSE={rmse:.4f}")
+
+                    mae, rmse = evaluate_itemcf(norm, sim, min_r, k)
+
+                    print(f"{norm} + {sim}, min={min_r}, k={k} → RMSE={rmse:.4f}")
 
                     results.append({
                         "normalization": norm,
@@ -283,13 +190,13 @@ if __name__ == "__main__":
                         "min_ratings": min_r,
                         "top_k": k,
                         "MAE": mae,
-                        "RMSE": rmse,
+                        "RMSE": rmse
                     })
 
     df = pd.DataFrame(results)
     df.to_csv("itemcf_results.csv", index=False)
     print("\nSaved → itemcf_results.csv")
 
-    # plots
+    # Plot results
     plot_rmse_vs_k(df)
-    plot_best_configs(df, top_n=10)
+    plot_best_configs(df)
