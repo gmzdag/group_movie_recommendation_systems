@@ -5,23 +5,24 @@ This loader provides unified access to:
 - Movies
 - Ratings
 - Watchlists
-- User–Movie matrices (NaN vs zero-filled)
+- User–Movie matrices (CF NaN vs Dense Zero)
 - Group utilities
 
-It is optimized to support:
-- Item-Based CF (uses NaN matrix)
-- User-Based CF (uses zero-fill matrix)
-- Content-Based Filtering
-- Watchlist-based models
-- Mixed Hybrid models
+Supports:
+- Item-Based CF  → uses NaN matrix
+- User-Based CF  → uses NaN matrix (because Pearson/Shrinkage)
+- Content-Based Filtering → uses zero-filled matrix
+- Mixed Hybrid Models
+- Watchlist-based scoring
 """
 
 import pandas as pd
 import numpy as np
 
-# -------------------------------------------------------------------
-# File paths (modify easily if needed)
-# -------------------------------------------------------------------
+
+# ------------------------------------------------------
+# File paths
+# ------------------------------------------------------
 MOVIES_PATH = "data/movies_tmdb.csv"
 RATINGS_PATH = "data/ratings.csv"
 WATCHLIST_PATH = "data/watchlists.csv"
@@ -31,7 +32,6 @@ WATCHLIST_PATH = "data/watchlists.csv"
 # Load Movies
 # ------------------------------------------------------
 def load_movies():
-    """Load movie metadata and ensure clean text/numeric fields."""
     movies = pd.read_csv(MOVIES_PATH)
 
     text_cols = [
@@ -52,10 +52,9 @@ def load_movies():
 # Load Ratings
 # ------------------------------------------------------
 def load_ratings():
-    """Load MovieLens + Letterboxd-merged ratings."""
     ratings = pd.read_csv(RATINGS_PATH)
     ratings["rating"] = pd.to_numeric(ratings["rating"], errors="coerce")
-    ratings = ratings.dropna(subset=["rating"])  # No fake 0s
+    ratings = ratings.dropna(subset=["rating"])  # remove broken rows
     return ratings
 
 
@@ -63,7 +62,6 @@ def load_ratings():
 # Load Watchlists
 # ------------------------------------------------------
 def load_watchlists():
-    """Loads user watchlists if available."""
     try:
         watch = pd.read_csv(WATCHLIST_PATH)
         return watch[["userId", "movieId"]]
@@ -72,25 +70,28 @@ def load_watchlists():
 
 
 # ------------------------------------------------------
-# User–Movie Matrices
+# Matrix for CF (NaN missing)
 # ------------------------------------------------------
-def build_user_movie_matrix_nan(ratings):
+def build_cf_matrix(ratings):
     """
-    Build U×M matrix with NaN for missing values.
-    Required for Item-Based CF.
+    CF için kullanılan matris:
+    - Missing ratings = NaN
+    - Pearson correlation, Shrinkage, Adjusted Cosine için zorunlu
     """
     return ratings.pivot_table(
         index="userId",
         columns="movieId",
         values="rating",
         aggfunc="mean"
-    )  # keep NaN!
+    )   # NA korunur
 
 
-def build_user_movie_matrix_zero(ratings):
+# ------------------------------------------------------
+# Dense matrix for CB or group utilities
+# ------------------------------------------------------
+def build_dense_matrix(ratings):
     """
-    Build U×M matrix with 0 for missing values.
-    Useful for User-Based CF using cosine similarity.
+    Content-based ve group ops için zero-filled matris.
     """
     return ratings.pivot_table(
         index="userId",
@@ -101,25 +102,17 @@ def build_user_movie_matrix_zero(ratings):
 
 
 # ------------------------------------------------------
-# Group Utilities
+# Group utilities
 # ------------------------------------------------------
 def get_unseen_movies_for_group(group_user_ids, ratings, movies):
-    """
-    Returns movies that none of the group members have watched.
-    Useful in group recommendations.
-    """
     group_ratings = ratings[ratings["userId"].isin(group_user_ids)]
     seen = set(group_ratings["movieId"])
     all_movies = set(movies["movieId"])
-    return sorted(list(all_movies - seen))
+    return sorted(all_movies - seen)
 
 
 def get_group_rating_matrix(group_user_ids, ratings):
-    """
-    Returns U_group × M matrix for group-based analysis.
-    """
-    subset = ratings[ratings["userId"].isin(group_user_ids)]
-    return subset.pivot_table(
+    return ratings[ratings["userId"].isin(group_user_ids)].pivot_table(
         index="userId",
         columns="movieId",
         values="rating",
@@ -128,28 +121,20 @@ def get_group_rating_matrix(group_user_ids, ratings):
 
 
 def get_group_watchlist(group_user_ids, watchlists):
-    """Return watchlist movies for the group."""
-    subset = watchlists[watchlists["userId"].isin(group_user_ids)]
-    return sorted(subset["movieId"].unique())
+    return sorted(
+        watchlists[watchlists["userId"].isin(group_user_ids)]["movieId"].unique()
+    )
 
 
 # ------------------------------------------------------
-# High-Level Loader (All Data)
+# High-level unified loader
 # ------------------------------------------------------
 def load_all_data():
-    """
-    Loads everything:
-    - movies
-    - ratings
-    - watchlists
-    - NaN-based user–movie matrix (for ItemCF)
-    - Zero-fill matrix (for UserCF)
-    """
     movies = load_movies()
     ratings = load_ratings()
     watchlists = load_watchlists()
 
-    um_nan = build_user_movie_matrix_nan(ratings)
-    um_zero = build_user_movie_matrix_zero(ratings)
+    R_cf = build_cf_matrix(ratings)       # UserCF + ItemCF
+    R_dense = build_dense_matrix(ratings) # CB + group ops
 
-    return movies, ratings, watchlists, um_nan, um_zero
+    return movies, ratings, watchlists, R_cf, R_dense
