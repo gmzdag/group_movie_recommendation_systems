@@ -1,7 +1,11 @@
 """
-Item-Based Collaborative Filtering
-----------------------------------
-predict(), recommend(), recommend_group()
+Item-Based Collaborative Filtering (Signal Provider)
+----------------------------------------------------
+Optimized for Hybrid System Integration.
+- Normalization: Z-SCORE
+- Similarity: COSINE
+- Prediction: mean + (weighted_sum * std)
+- Output: Single prediction score (or NaN)
 """
 
 import numpy as np
@@ -9,12 +13,18 @@ import pandas as pd
 
 
 class ItemBasedCF:
-    def __init__(self, raw_um, norm_um, item_neighbors, movies, top_k=60):
-        print(f"\n[DEBUG] Initializing ItemBasedCF...")
+    def __init__(self, raw_um, norm_um, item_neighbors, movies, top_k=10):
+        """
+        Args:
+            raw_um: Raw Rating Matrix (Users x Movies), Missing=NaN
+            norm_um: Z-Score Normalized Matrix, Missing=0
+            item_neighbors: Pre-computed top-K neighbors dict
+            movies: Movies metadata (reference)
+            top_k: Neighbor count (Fixed=10 per request)
+        """
+        print(f"\n[DEBUG] Initializing ItemBasedCF (Hybrid Signal Mode)...")
         print(f"[DEBUG] - raw_um shape: {raw_um.shape}")
         print(f"[DEBUG] - norm_um shape: {norm_um.shape}")
-        print(f"[DEBUG] - item_neighbors count: {len(item_neighbors)}")
-        print(f"[DEBUG] - movies count: {len(movies)}")
         print(f"[DEBUG] - top_k: {top_k}")
         
         self.raw_um = raw_um
@@ -23,169 +33,103 @@ class ItemBasedCF:
         self.movies = movies
         self.top_k = top_k
         
-        print(f"[DEBUG] Pre-computing user means for faster prediction...")
+        # ------------------------------------------------------------------
+        # SAFETY CHECK: Ensure norm_um is Z-Score Normalized
+        # ------------------------------------------------------------------
+        # Check 1: Mean is approx 0
+        row_means = self.norm_um.mean(axis=1)
+        global_mean = row_means.mean()
+        
+        # Check 2: Std of non-zero values (approx check)
+        # We can't easily check 'std=1' on sparse 0-filled data without re-masking,
+        # but we can assume if mean is 0 it's likely centered/standardized.
+        
+        if abs(global_mean) > 0.1:
+            print(f"\n[WARNING] 'norm_um' does NOT appear to be Z-Score Normalized!")
+            print(f"          Global mean: {global_mean:.4f} (Expected ~0.0)")
+            print(f"          Prediction formula requires Z-Score input.")
+
+        # ------------------------------------------------------------------
+        # Pre-compute User Statistcs (Mean & Std)
+        # ------------------------------------------------------------------
+        print(f"[DEBUG] Pre-computing user statistics (Mean & Std)...")
+        
+        # Mean (ignoring NaNs)
         self.user_means = self.raw_um.mean(axis=1)
-        print(f"[DEBUG] User means - Min: {self.user_means.min():.2f}, Max: {self.user_means.max():.2f}")
+        
+        # Standard Deviation (ignoring NaNs)
+        # Replace 0 std with 1.0 to avoid multiplication issues
+        self.user_stds = self.raw_um.std(axis=1).fillna(1.0).replace(0, 1.0)
+        
+        print(f"[DEBUG] User Means range: [{self.user_means.min():.2f}, {self.user_means.max():.2f}]")
+        print(f"[DEBUG] User Stds range:  [{self.user_stds.min():.2f}, {self.user_stds.max():.2f}]")
+
 
     # ------------------------------------------------------------
-    # Predict rating
+    # Predict rating (Signal Only)
     # ------------------------------------------------------------
     def predict(self, user_id, movie_id, verbose=False):
         """
-        Predict rating for user_id on movie_id
+        Predict rating for user_id on movie_id using Z-Score reconstruction.
+        Formula: pred = μ_u + ( (Σ s_ij * z_uj) / Σ|s_ij| ) * σ_u
         
-        Args:
-            user_id: User ID
-            movie_id: Movie ID
-            verbose: Print debug info for this prediction
+        Returns:
+            float: Predicted rating
+            NaN: If prediction impossible (no neighbors, no history)
         """
-        if verbose:
-            print(f"\n[PREDICT] User {user_id}, Movie {movie_id}")
         
-        # Case 1: Movie has no neighbors
+        # 1. Check if movie has neighbors
         if movie_id not in self.item_neighbors:
-            fallback = self.user_means.get(user_id, 3.0)
-            if verbose:
-                print(f"  → No neighbors found, returning user mean: {fallback:.2f}")
-            return fallback
+            return np.nan
         
-        user_orig = self.raw_um.loc[user_id]
-        user_norm = self.norm_um.loc[user_id]
+        # 2. Get User Stats
+        try:
+            user_mean = self.user_means.loc[user_id]
+            user_std = self.user_stds.loc[user_id]
+        except KeyError:
+            # User not in training set
+            return np.nan
+
+        # 3. Get Neighbors & User History
         neighbors = self.item_neighbors[movie_id]
         
-        if verbose:
-            print(f"  → Movie has {len(neighbors)} neighbors")
+        # Retrieve user's normalized ratings for these neighbors
+        # We access norm_um directly. 
+        # Note: neighbors is {movie_id: similarity}
+        neighbor_ids = list(neighbors.keys())
         
-        # Find rated neighbors
-        rated_neighbors = [
-            m for m in neighbors.keys()
-            if pd.notna(user_orig.get(m))
-        ]
+        # Filter: User must have rated the neighbor (check raw_um for existence)
+        # Optimized: check intersection of user_rated and neighbor_ids
+        # But efficiently: user_norm slice + check for 0? 
+        # Problem: In Z-score, a valid rating can be exactly 0 (if rating == mean).
+        # Correct: Check raw_um notna.
         
-        if verbose:
-            print(f"  → User rated {len(rated_neighbors)} of these neighbors")
+        user_raw_slice = self.raw_um.loc[user_id]
+        valid_neighbors = [m for m in neighbor_ids if pd.notna(user_raw_slice.get(m))]
         
-        # Case 2: No rated neighbors
-        if len(rated_neighbors) == 0:
-            fallback = self.user_means.get(user_id, 3.0)
-            if verbose:
-                print(f"  → No rated neighbors, returning user mean: {fallback:.2f}")
-            return fallback
+        if not valid_neighbors:
+            return np.nan
         
-        # Weighted prediction
-        weights = np.array([neighbors[m] for m in rated_neighbors])
-        ratings = user_norm.loc[rated_neighbors].values
+        # 4. Compute Weighted Sum
+        # Extract weights (similarities) and values (z-scores)
+        weights = np.array([neighbors[m] for m in valid_neighbors])
+        z_scores = self.norm_um.loc[user_id, valid_neighbors].values
         
-        if verbose:
-            print(f"  → Weights range: [{weights.min():.3f}, {weights.max():.3f}]")
-            print(f"  → Normalized ratings range: [{ratings.min():.3f}, {ratings.max():.3f}]")
+        sum_abs_weights = np.sum(np.abs(weights))
         
-        # Case 3: All ratings are zero (user rated everything at their mean)
-        if np.all(ratings == 0):
-            fallback = self.user_means.get(user_id, 3.0)
-            if verbose:
-                print(f"  → All normalized ratings are 0, returning user mean: {fallback:.2f}")
-            return fallback
-        
-        # Final prediction
-        weighted = np.dot(weights, ratings) / np.sum(np.abs(weights))
-        user_mean = self.user_means.get(user_id, 3.0)
-        prediction = float(user_mean + weighted)
-        
-        if verbose:
-            print(f"  → Weighted deviation: {weighted:.3f}")
-            print(f"  → User mean: {user_mean:.2f}")
-            print(f"  → FINAL PREDICTION: {prediction:.2f}")
-        
-        return prediction
-
-    # ------------------------------------------------------------
-    # Recommend for user
-    # ------------------------------------------------------------
-    def recommend(self, user_id, top_n=10):
-        """
-        Generate top-N recommendations for a single user
-        """
-        print(f"\n{'='*60}")
-        print(f"[RECOMMEND] Generating recommendations for User {user_id}")
-        print(f"{'='*60}")
-        
-        user_orig = self.raw_um.loc[user_id]
-        unrated = user_orig[user_orig.isna()].index
-        
-        print(f"[DEBUG] User has rated {user_orig.notna().sum()} movies")
-        print(f"[DEBUG] Predicting for {len(unrated)} unrated movies...")
-        
-        preds = []
-        for idx, m in enumerate(unrated):
-            score = self.predict(user_id, m)
-            preds.append((m, score))
+        if sum_abs_weights == 0:
+            return np.nan
             
-            # Progress every 10%
-            if (idx + 1) % max(1, len(unrated) // 10) == 0:
-                print(f"[PROGRESS] {idx+1}/{len(unrated)} predictions made...")
+        pred_z = np.dot(weights, z_scores) / sum_abs_weights
         
-        df = pd.DataFrame(preds, columns=["movieId", "score"])
-        df = df.merge(self.movies[["movieId", "title"]], on="movieId", how="left")
+        # 5. Reconstruct Rating
+        prediction = user_mean + (pred_z * user_std)
         
-        result = df.sort_values("score", ascending=False).head(top_n)
+        # Clip to valid range (optional, but good for stability 1-5)
+        # prediction = np.clip(prediction, 0.5, 5.5) 
+        # (User didn't ask for clip, but infinite values check is requested)
         
-        print(f"\n[RESULT] Top {top_n} recommendations:")
-        print(f"  → Score range: [{result['score'].min():.2f}, {result['score'].max():.2f}]")
-        
-        return result
-
-    # ------------------------------------------------------------
-    # Group recommendation
-    # ------------------------------------------------------------
-    def recommend_group(self, group_users, method="mean_score", top_n=10):
-        """
-        Generate recommendations for a group of users
-        
-        Args:
-            group_users: List of user IDs
-            method: 'mean_score', 'least_misery', or 'most_pleasure'
-            top_n: Number of recommendations
-        """
-        print(f"\n{'='*60}")
-        print(f"[GROUP RECOMMEND] Users: {group_users}")
-        print(f"[GROUP RECOMMEND] Method: {method}")
-        print(f"{'='*60}")
-        
-        watched_by_group = self.raw_um.loc[group_users].notna().any(axis=0)
-        unrated_movies = self.raw_um.columns[~watched_by_group]
-        
-        print(f"[DEBUG] Group has watched {watched_by_group.sum()} movies collectively")
-        print(f"[DEBUG] Predicting for {len(unrated_movies)} unwatched movies...")
-        
-        group_scores = {}
-        
-        for idx, movie_id in enumerate(unrated_movies):
-            # Get predictions for all users
-            scores = [self.predict(u, movie_id) for u in group_users]
+        if np.isnan(prediction) or np.isinf(prediction):
+            return np.nan
             
-            # Aggregate
-            if method == "mean_score":
-                agg = np.mean(scores)
-            elif method == "least_misery":
-                agg = np.min(scores)
-            elif method == "most_pleasure":
-                agg = np.max(scores)
-            else:
-                raise ValueError(f"Unknown method: {method}")
-            
-            group_scores[movie_id] = agg
-            
-            # Progress every 10%
-            if (idx + 1) % max(1, len(unrated_movies) // 10) == 0:
-                print(f"[PROGRESS] {idx+1}/{len(unrated_movies)} movies processed...")
-        
-        df = pd.DataFrame(group_scores.items(), columns=["movieId", "score"])
-        df = df.merge(self.movies[["movieId", "title"]], on="movieId", how="left")
-        
-        result = df.sort_values("score", ascending=False).head(top_n)
-        
-        print(f"\n[RESULT] Top {top_n} group recommendations:")
-        print(f"  → Score range: [{result['score'].min():.2f}, {result['score'].max():.2f}]")
-        
-        return result
+        return float(prediction)
