@@ -40,6 +40,10 @@ def load_movies():
     ]
     for col in text_cols:
         movies[col] = movies[col].fillna("").astype(str)
+        
+    # Extract Year from Title (e.g., "(1995)")
+    movies['year'] = movies['title'].str.extract(r'\((\d{4})\)').astype(float)
+    movies['year'] = movies['year'].fillna(0).astype(int)
 
     num_cols = ["Vote_Average", "Vote_Count", "Budget", "Revenue", "Runtime"]
     for col in num_cols:
