@@ -115,7 +115,13 @@ def cleanup_duplicates():
     
     # Merge entries if a user rated both versions
     # We strip duplicates by taking the mean of the ratings (or just the latest, but mean is safer for mixed opinions)
-    ratings = ratings.groupby(['userId', 'movieId'], as_index=False)['rating'].mean()
+    # Merge entries if a user rated both versions
+    # We strip duplicates by taking the mean of the ratings (or just the latest, but mean is safer for mixed opinions)
+    agg_rules = {'rating': 'mean'}
+    if 'timestamp' in ratings.columns:
+        agg_rules['timestamp'] = 'max'
+        
+    ratings = ratings.groupby(['userId', 'movieId'], as_index=False).agg(agg_rules)
     
     # 3. Clean Movies
     print("Pruning movies file...")

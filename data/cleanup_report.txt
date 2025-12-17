@@ -1,34 +1,65 @@
-DUPLICATE CLEANUP REPORT
-========================
-Total Duplicates Resolved: 19
-Ratings consolidated from 106676 to 106674
+DATA CLEANUP REPORT
+===================
+Movies Reduced: 12873 -> 12816
+Ratings Consolid.: 106676 -> 106669
 
-Logic:
-- Normalized titles (lowercase, removed accents).
-- Identified duplicate groups.
-- Selected Canonical ID = Lowest ID in group.
-- Remapped all ratings of Duplicate IDs to Canonical ID.
-- Removed Duplicate IDs from movies file.
-
-RESOLVED ITEMS:
-Duplicate ID | Duplicate Title                          -> Canon ID   | Canon Title
-----------------------------------------------------------------------------------------------------
-200111       | Amélie (2001)                            -> 4973       | Amelie (2001)
-200121       | Stranger Than Fiction (2006)             -> 46976      | Stranger than Fiction (2006)
-200139       | TRON: Legacy (2010)                      -> 82461      | Tron: Legacy (2010)
-200495       | sex, lies, and videotape (1989)          -> 1186       | Sex, Lies, and Videotape (1989)
-200496       | GoodFellas (1990)                        -> 1213       | Goodfellas (1990)
-200514       | In the Mood for Love (2000)              -> 4144       | In the Mood For Love (2000)
-200585       | RED (2010)                               -> 81229      | Red (2010)
-201485       | Flirting with Disaster (1996)            -> 125        | Flirting With Disaster (1996)
-201554       | TransSiberian (2008)                     -> 60647      | Transsiberian (2008)
-201627       | RED 2 (2013)                             -> 103810     | Red 2 (2013)
-201752       | mother! (2017)                           -> 176419     | Mother! (2017)
-202444       | The Double Life of Véronique (1991)      -> 1176       | The Double Life of Veronique (1991)
-202502       | Ernest & Celestine (2012)                -> 108540     | Ernest & Célestine (2012)
-202518       | Ben-Hur (2016)                           -> 122888     | Ben-hur (2016)
-202741       | Munna Bhai M.B.B.S. (2003)               -> 171751     | Munna bhai M.B.B.S. (2003)
-202879       | My Dinner with Andre (1981)              -> 5772       | My Dinner with André (1981)
-202918       | Lilya 4-ever (2002)                      -> 6291       | Lilya 4-Ever (2002)
-202949       | Boyz n the Hood (1991)                   -> 6796       | Boyz N the Hood (1991)
-203047       | Malena (2000)                            -> 3992       | Malèna (2000)
+RESOLVED DUPLICATES:
+DupID    | Duplicate Title                          -> CanonID  | Canonical Title
+------------------------------------------------------------------------------------------
+26958    | Emma (1996)                              -> 838      | Emma (1996)
+64997    | War of the Worlds (2005)                 -> 34048    | War of the Worlds (2005)
+144606   | Confessions of a Dangerous Mind (2002)   -> 6003     | Confessions of a Dangerous Mind (2002)
+147002   | Eros (2004)                              -> 32600    | Eros (2004)
+168358   | Saturn 3 (1980)                          -> 2851     | Saturn 3 (1980)
+200073   | Bicycle Thieves (1948)                   -> 3089     | Bicycle Thieves (a.k.a. The Bicycle Thief) (a.k.a. The Bicycle Thieves) (1948)
+200102   | Léon: The Professional (1994)            -> 293      | Léon: The Professional (a.k.a. The Professional) (1994)
+200104   | Die Hard With a Vengeance (1995)         -> 165      | Die Hard: With a Vengeance (1995)
+200109   | Star Wars: Episode I – The Phantom Men   -> 2628     | Star Wars: Episode I - The Phantom Menace (1999)
+200111   | Amélie (2001)                            -> 4973     | Amelie (2001)
+200113   | Adaptation. (2002)                       -> 5902     | Adaptation (2002)
+200121   | Stranger Than Fiction (2006)             -> 46976    | Stranger than Fiction (2006)
+200139   | TRON: Legacy (2010)                      -> 82461    | Tron: Legacy (2010)
+200160   | The Way Way Back (2013)                  -> 102993   | The Way, Way Back (2013)
+200173   | Reality+ (2014)                          -> 129313   | Reality (2014)
+200197   | T2 Trainspotting (2017)                  -> 168266   | T2: Trainspotting (2017)
+200491   | Who Framed Roger Rabbit (1988)           -> 2987     | Who Framed Roger Rabbit? (1988)
+200495   | sex, lies, and videotape (1989)          -> 1186     | Sex, Lies, and Videotape (1989)
+200496   | GoodFellas (1990)                        -> 1213     | Goodfellas (1990)
+200514   | In the Mood for Love (2000)              -> 4144     | In the Mood For Love (2000)
+200519   | Moulin Rouge! (2001)                     -> 4308     | Moulin Rouge (2001)
+200568   | BURN·E (2008)                            -> 85736    | BURN-E (2008)
+200572   | Monsters vs Aliens (2009)                -> 67408    | Monsters vs. Aliens (2009)
+200585   | RED (2010)                               -> 81229    | Red (2010)
+200657   | The Hunger Games: Mockingjay – Part 1    -> 116823   | The Hunger Games: Mockingjay - Part 1 (2014)
+201449   | The Karate Kid Part II (1986)            -> 2421     | The Karate Kid, Part II (1986)
+201485   | Flirting with Disaster (1996)            -> 125      | Flirting With Disaster (1996)
+201506   | Lara Croft: Tomb Raider – The Cradle o   -> 6564     | Lara Croft Tomb Raider: The Cradle of Life (2003)
+201543   | What Happens in Vegas (2008)             -> 59421    | What Happens in Vegas... (2008)
+201554   | TransSiberian (2008)                     -> 60647    | Transsiberian (2008)
+201569   | Fired Up! (2009)                         -> 69069    | Fired Up (2009)
+201588   | The Twilight Saga: Breaking Dawn – Par   -> 91104    | The Twilight Saga: Breaking Dawn - Part 1 (2011)
+201607   | Why Stop Now? (2012)                     -> 100226   | Why Stop Now (2012)
+201611   | The Twilight Saga: Breaking Dawn – Par   -> 98203    | The Twilight Saga: Breaking Dawn - Part 2 (2012)
+201627   | RED 2 (2013)                             -> 103810   | Red 2 (2013)
+201680   | The Hunger Games: Mockingjay – Part 2    -> 135133   | The Hunger Games: Mockingjay - Part 2 (2015)
+201752   | mother! (2017)                           -> 176419   | Mother! (2017)
+201773   | Mother (2017)                            -> 176419   | Mother! (2017)
+201844   | Mamma Mia! Here We Go Again (2018)       -> 188751   | Mamma Mia: Here We Go Again! (2018)
+202444   | The Double Life of Véronique (1991)      -> 1176     | The Double Life of Veronique (1991)
+202449   | Happy Together (1997)                    -> 7486     | Happy Together (a.k.a. Buenos Aires Affair) (1997)
+202470   | Herbie Fully Loaded (2005)               -> 33830    | Herbie: Fully Loaded (2005)
+202476   | American Pie Presents: The Naked Mile    -> 50189    | American Pie Presents The Naked Mile (2006)
+202502   | Ernest & Celestine (2012)                -> 108540   | Ernest & Célestine (2012)
+202518   | Ben-Hur (2016)                           -> 122888   | Ben-hur (2016)
+202726   | Aguirre, the Wrath of God (1972)         -> 7063     | Aguirre: The Wrath of God (1972)
+202737   | FearDotCom (2002)                        -> 5556     | FearDotCom (a.k.a. Fear.com) (2002)
+202741   | Munna Bhai M.B.B.S. (2003)               -> 171751   | Munna bhai M.B.B.S. (2003)
+202752   | American Pie Presents: Beta House (200   -> 59429    | American Pie Presents Beta House (2007)
+202777   | The Huntsman: Winter's War (2016)        -> 156607   | The Huntsman Winter's War (2016)
+202879   | My Dinner with Andre (1981)              -> 5772     | My Dinner with André (1981)
+202918   | Lilya 4-ever (2002)                      -> 6291     | Lilya 4-Ever (2002)
+202949   | Boyz n the Hood (1991)                   -> 6796     | Boyz N the Hood (1991)
+203047   | Malena (2000)                            -> 3992     | Malèna (2000)
+203073   | Everybody Wants Some!! (2016)            -> 156371   | Everybody Wants Some (2016)
+203097   | Alien Resurrection (1997)                -> 1690     | Alien: Resurrection (1997)
+203099   | Step Up 2: The Streets (2008)            -> 58107    | Step Up 2 the Streets (2008)
