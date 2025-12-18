@@ -1,0 +1,48 @@
+# Group Movie Recommendation System - Configuration
+# =================================================
+
+# Model Configurations
+models:
+  hybrid_model_1:
+    C: 1.0  # Trust factor (optimal based on validation)
+    item_k: 20  # Number of item neighbors
+    normalization: 'zscore'  # Normalization method
+    
+  hybrid_model_2:
+    user_k: 30  # Number of user neighbors
+    threshold: 0.5  # Switching threshold
+    
+  hybrid_model_3:
+    watchlist_weight: 0.8  # Watchlist signal weight
+
+# Evaluation Settings
+evaluation:
+  num_groups: 50  # Number of test groups
+  min_group_size: 2
+  max_group_size: 4
+  k_values: [5, 10, 20]  # K values for metrics
+  ground_truth_threshold: 3.5  # Rating threshold for relevance
+
+# Data Settings
+data:
+  recent_only: true  # Use only recent ratings
+  recent_count: 50000  # Number of recent ratings
+  train_ratio: 0.7
+  valid_ratio: 0.15
+  # test_ratio = 1 - train_ratio - valid_ratio = 0.15
+
+# Caching Settings
+cache:
+  enabled: true
+  directory: 'cache'
+  ttl: 86400  # 24 hours in seconds
+  
+# Temporal Filtering
+temporal:
+  enabled: true
+  recency_weight: 0.3  # Weight for recency in temporal score
+  
+# Logging
+logging:
+  level: 'INFO'  # DEBUG, INFO, WARNING, ERROR
+  file: 'logs/recommender.log'

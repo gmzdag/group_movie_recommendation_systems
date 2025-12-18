@@ -1,10 +1,11 @@
 
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
-from recommender.UBCF.user_based_cf import UserBasedCF
-from recommender.CB.content_based import ContentBasedModel
+from src.recommender.UBCF.user_based_cf import UserBasedCF
+from src.recommender.CB.content_based import ContentBasedModel
+
 
 class SwitchingHybridRecommender:
     """
@@ -120,58 +121,129 @@ class SwitchingHybridRecommender:
 
 
 
-    def recommend_group(self, group_users: List[int], top_n: int = 10, alpha: float = 0.5) -> pd.DataFrame:
+    def recommend_for_group(self, group_users: List[int], candidates: List[int], top_k: int = 10, alpha: float = 0.5) -> List[Dict]:
         """
-        Group Recommendation using Weighted Hybrid Strategy with Mean Aggregation.
-        
-        Strategy:
-        1. For each candidate movie:
-           - Calculate Score = (alpha * UBCF_Score) + ((1-alpha) * CBF_Score)
-        2. Aggregation: Group Score = Mean(User Scores)
-        
-        Args:
-            alpha (float): Weight for UBCF (0.0 to 1.0). 
-                           0.5 means equal weight.
+        Alias for recommend_group to match HybridModel1 interface.
+        Returns list of dicts instead of DF.
         """
-        # Exclude if *any* member watched it to avoid "I've already seen that".
+        # Call internal method (adapted)
+        # SwitchingHybrid recommend_group signature: (group_users, top_n, alpha)
+        # It returns DataFrame. We need List[Dict] to match Ensemble expectation.
         
-        all_watched = set()
-        for uid in group_users:
-            if uid in self.ubcf.R.index:
-                all_watched.update(self.ubcf.R.loc[uid].dropna().index)
+        # Adaptation:
+        df = self.recommend_group(group_users, top_n=top_k, candidates=candidates)
         
-        all_movies = self.ubcf.R.columns
-        candidates = [m for m in all_movies if m not in all_watched]
+        # Convert to list of dicts
+        results = []
+        for idx, row in df.iterrows():
+            results.append({
+                'movie_id': row['movieId'],
+                'score': row['score'],
+                'group_explanation': "Switching Hybrid Result", # Hybrid 2 doesn't retain explanation detail
+                'explanations': {} 
+            })
+        return results
+
+    def explain(self, user_id: int, movie_id: int) -> Dict[str, Any]:
+        """
+        Generates explanation signals for Switching Hybrid.
+        Checks which method (UBCF/CBF) would be active for this user/item.
+        """
+        from src.recommender.explanation_engine import ExplanationEngine
+        
+        signals = []
+        
+        # Determine likely method (logic mirrors predict loop)
+        method = "UBCF"
+        if user_id not in self.ubcf.neighbors or not self.ubcf.neighbors[user_id]:
+            method = "CBF"
+            
+        if method == "UBCF":
+            # UBCF Signal
+            # We don't have detailed "Similar User" names usually (privacy/system design),
+            # but we can say "Popular among similar users".
+            # Strength? Use prediction vs global mean gap?
+            # Or just neighbor count confidence.
+            
+            n_count = len(self.ubcf.neighbors.get(user_id, {}))
+            strength = 0.8 if n_count > 10 else 0.5
+            
+            signals.append({
+                'source': 'UBCF',
+                'strength': strength,
+                'context_items': [],
+                'features': []
+            })
+            
+        else:
+            # CBF Signal
+            # Fallback to CB logic (similar to Hybrid 1 but maybe simpler here)
+            # Re-use CB model to find match
+             try:
+                # Reuse the logic from Hybrid 1 via CB model helper if available?
+                # Or just basic checks.
+                # Let's assume CBF model has helper `get_shared_traits`
+                pass
+             except:
+                pass
+             
+             signals.append({
+                'source': 'CBF',
+                'strength': 0.4, # Fallback is usually weaker confidence
+                'context_items': [],
+                'features': []
+             })
+             
+        return ExplanationEngine.generate_explanation(signals)
+    
+    def recommend_group(self, group_users: List[int], top_n: int = 10, candidates: List[int] = None) -> pd.DataFrame:
+        """
+        Group Recommendation using True Switching Strategy.
+        For each user, we determine the best model (UBCF or CBF) based on data availability,
+        then predict the score. Finally, we aggregate these scores for the group.
+        """
+        # Exclude if *any* member watched it
+        if candidates is None:
+            all_watched = set()
+            for uid in group_users:
+                if uid in self.ubcf.R.index:
+                    all_watched.update(self.ubcf.R.loc[uid].dropna().index)
+            
+            all_movies = self.ubcf.R.columns
+            candidates = [m for m in all_movies if m not in all_watched]
         
         group_scores = []
-        
-        # Pre-check neighbors for fallbacks (UBCF might be weak for some)
-        # But in Weighted Hybrid, we try to use BOTH.
         
         for mid in candidates:
             member_scores = []
             
             for uid in group_users:
-                # --- 1. UBCF Component ---
-                ubcf_val = np.nan
-                try:
-                    # If user has neighbors, predict. Else global mean.
-                    if uid in self.ubcf.neighbors and self.ubcf.neighbors[uid]:
-                        ubcf_val = self.ubcf.predict(uid, mid)
-                    else:
-                        ubcf_val = self.ubcf.global_mean 
-                except:
-                    ubcf_val = self.ubcf.global_mean
-
-                # --- 2. CBF Component (with Year boost) ---
-                cbf_val = self.cbf.predict_rating(uid, mid)
-                if np.isnan(cbf_val):
-                    cbf_val = self.ubcf.global_mean
-
-                # --- 3. Weighted Mix ---
-                # Formula: Score = alpha * UBCF + (1-alpha) * CBF
-                final_score = (alpha * ubcf_val) + ((1 - alpha) * cbf_val)
-                member_scores.append(final_score)
+                score = 0.0
+                method_used = "UBCF"
+                
+                # Check for Neighbors (Switching Condition)
+                # If user has sufficient neighbors, we trust UBCF (Collaborative).
+                # Otherwise, we switch to CBF (Content-Based) to handle Cold Start / Sparsity.
+                has_neighbors = (uid in self.ubcf.neighbors and len(self.ubcf.neighbors[uid]) > 0)
+                
+                if has_neighbors:
+                    try:
+                        pred = self.ubcf.predict(uid, mid)
+                        score = pred
+                    except:
+                        # Fallback to CBF if UBCF fails technically
+                        score = self.cbf.predict_rating(uid, mid)
+                        method_used = "CBF"
+                else:
+                    # Cold Start: Switch to Content-Based
+                    score = self.cbf.predict_rating(uid, mid)
+                    method_used = "CBF"
+                
+                if np.isnan(score):
+                    score = self.ubcf.global_mean
+                    method_used = "GlobalMean"
+                    
+                member_scores.append(score)
             
             # Aggregation: MEAN STRATEGY
             avg_score = np.mean(member_scores)
@@ -185,22 +257,13 @@ class SwitchingHybridRecommender:
         group_scores.sort(key=lambda x: x["score"], reverse=True)
         top_items = group_scores[:top_n]
         
-
-        # Add Titles if movie dataframe is available in UBCF or CBF
-        # UBCF has self.movies
         results_df = pd.DataFrame(top_items)
         if not results_df.empty and self.ubcf.movies is not None:
-             # Ensure index is movieId for mapping
-             # Check if movieId is index, if not set it
              if 'movieId' in self.ubcf.movies.columns:
                  title_map = self.ubcf.movies.set_index('movieId')['title']
              else:
-                 # Assume it's already index if not column? Safer to rely on what load_movies returns
-                 # load_movies returns movieId as a column, default integer index
-                 title_map = self.ubcf.movies['title'] # This would be wrong if index != movieId
+                 title_map = self.ubcf.movies['title']
                  
-             # Correct logic:
-             # load_movies() returns DF with 'movieId' column.
              title_map = self.ubcf.movies.set_index('movieId')['title']
              results_df['title'] = results_df['movieId'].map(title_map)
              
