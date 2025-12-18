@@ -20,12 +20,18 @@ import pandas as pd
 import numpy as np
 
 
+import os
+
 # ------------------------------------------------------
 # File paths
 # ------------------------------------------------------
-MOVIES_PATH = "data/movies_tmdb.csv"
-RATINGS_PATH = "data/ratings.csv"
-WATCHLIST_PATH = "data/watchlists.csv"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+MOVIES_PATH = os.path.join(DATA_DIR, "movies_tmdb.csv")
+RATINGS_PATH = os.path.join(DATA_DIR, "ratings.csv")
+
+WATCHLIST_PATH = os.path.join(DATA_DIR, "watchlist.csv")
 
 
 # ------------------------------------------------------
@@ -128,6 +134,27 @@ def get_group_watchlist(group_user_ids, watchlists):
     return sorted(
         watchlists[watchlists["userId"].isin(group_user_ids)]["movieId"].unique()
     )
+
+
+
+SPLITS_DIR = os.path.join(DATA_DIR, "splits")
+
+# ------------------------------------------------------
+# Load Splits
+# ------------------------------------------------------
+def load_train_valid_test_splits():
+    """
+    Loads fixed temporal splits from data/splits/
+    Returns: train, validation, test (dataframes)
+    """
+    if not os.path.exists(SPLITS_DIR):
+        raise FileNotFoundError(f"Splits directory not found at {SPLITS_DIR}. Please run create_temporal_splits.py first.")
+        
+    train = pd.read_csv(os.path.join(SPLITS_DIR, "train.csv"))
+    valid = pd.read_csv(os.path.join(SPLITS_DIR, "validation.csv"))
+    test = pd.read_csv(os.path.join(SPLITS_DIR, "test.csv"))
+    
+    return train, valid, test
 
 
 # ------------------------------------------------------

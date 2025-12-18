@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from src.recommender.data_loader import load_movies, load_ratings
-from src.recommender.content_based import ContentBasedModel
+from src.recommender.CBF.content_based import ContentBasedModel
 
 def explain_similarity(movie_a, movie_b):
     """

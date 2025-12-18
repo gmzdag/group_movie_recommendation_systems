@@ -7,7 +7,7 @@ from sklearn.metrics import ndcg_score
 from sklearn.metrics.pairwise import cosine_similarity
 from src.recommender.data_loader import load_ratings, load_movies, build_cf_matrix
 from src.recommender.IBCF.item_based_cf import ItemBasedCF
-from src.recommender.content_based import ContentBasedModel
+from src.recommender.CBF.content_based import ContentBasedModel
 from src.recommender.IBCF.neighbors_item import compute_item_neighbors
 import warnings
 

@@ -1,0 +1,4 @@
+config,param_max_features,param_ngram_range,param_min_df,param_stop_words,hit@5,hit@10,mrr,evals,param_field_weights
+tfidf_unigram_5k,5000,"(1, 1)",1,english,0.0,0.0,0.001804078111838752,205,
+tfidf_bigram_10k,10000,"(1, 2)",2,english,0.0,0.0,0.0017101839736806345,205,
+tfidf_bigram_title_boost,15000,"(1, 2)",2,english,0.0,0.0,0.0020446850641379203,205,"{'title': 1.0, 'genres': 1.2, 'keywords': 1.0, 'overview': 0.8}"

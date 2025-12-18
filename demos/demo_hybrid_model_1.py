@@ -8,7 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pandas as pd
 from src.recommender.data_loader import load_ratings, load_movies, build_cf_matrix
 from src.recommender.IBCF.item_based_cf import ItemBasedCF
-from src.recommender.content_based import ContentBasedModel
+from src.recommender.CB.content_based import ContentBasedModel
 from src.recommender.IBCF.neighbors_item import load_or_compute_item_neighbors
 from src.recommender.hybrid.hybrid_model_1 import HybridModel1
 

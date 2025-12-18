@@ -13,6 +13,8 @@ This script:
 4. Saves plot to 'itemcf_hyperparam_curves.svg'.
 """
 
+
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -305,12 +307,18 @@ if __name__ == "__main__":
                     except Exception as e:
                         print(f"Error in config {norm}+{sim}: {e}")
 
+
     # Plot
+    RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    
     df = pd.DataFrame([{k:v for k,v in r.items() if k not in ['y_true', 'y_pred']} for r in results])
-    df.to_csv("itemcf_results.csv", index=False)
-    print("\nSaved → itemcf_results.csv")
+    csv_path = os.path.join(RESULTS_DIR, "itemcf_results.csv")
+    df.to_csv(csv_path, index=False)
+    print(f"\nSaved → {csv_path}")
     
     if results:
-        plot_results(results)
+        plot_path = os.path.join(RESULTS_DIR, "itemcf_hyperparam_curves.svg")
+        plot_results(results, output_file=plot_path)
     else:
         print("No valid results to plot.")
