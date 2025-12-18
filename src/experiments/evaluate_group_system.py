@@ -523,12 +523,17 @@ def main():
     print(f"   Created {len(groups)} test groups")
     print(f"   Group sizes: {[len(g) for g in groups[:5]]}... (showing first 5)")
     
-    # Evaluate ALL HYBRID MODELS
-    print("\n[5/5] Running evaluation for ALL hybrid models...")
+    # Evaluate HYBRID MODELS (H1 and H2 only)
+    # Note: H3 (watchlist-based) is NOT evaluated here because MovieLens users
+    # don't have watchlist data. Without watchlists, H3 becomes functionally
+    # equivalent to H1. H3 is evaluated separately in the case study with real
+    # users who have watchlist data (see evaluate_case_study.py).
+    print("\n[5/5] Running evaluation for hybrid models (H1, H2)...")
+    print("   Note: H3 excluded - MovieLens users lack watchlist data")
     
     all_results = {}
     
-    for model_name in ['h1', 'h2', 'h3']:
+    for model_name in ['h1', 'h2']:
         print(f"\n{'='*80}")
         print(f"EVALUATING MODEL: {model_name.upper()}")
         print(f"{'='*80}")
@@ -570,7 +575,7 @@ def main():
     print(f"\n{'Model':<10} {'K':<5} {'NDCG':<10} {'Precision':<12} {'Recall':<10} {'Diversity':<10}")
     print("-"*80)
     
-    for model_name in ['h1', 'h2', 'h3']:
+    for model_name in ['h1', 'h2']:  # H3 evaluated separately with real users
         for k in [5, 10]:
             key = f'k{k}'
             res = all_results[model_name][key]
