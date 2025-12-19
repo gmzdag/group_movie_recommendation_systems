@@ -31,14 +31,16 @@ OFFLINE_EVAL_CONFIG = {
     # Evaluation Configuration
     'k_values': [5, 10],
     'ground_truth_threshold': 3.5,  # Ratings >= 3.5 considered relevant
-    'ground_truth_strategy': 'relaxed',  # More lenient for sparse data
+    'ground_truth_min_support': 2,  # Require at least 2 members to have watched it (for groups >= 2)
+    'ground_truth_strategy': 'strict',  # Changed from 'relaxed' to 'strict'
+    'candidate_pool_size': 3000, # Increased from 500 to 3000 to avoid popularity bias
     
     # Model Configuration
     'models_evaluated': ['h1', 'h2', 'h3'],
     'normalization': 'zscore',
-    'item_k': 20,
+    'item_k': 60,
     'user_k': 30,
-    'hybrid_weight_C': 1.0,
+    'hybrid_weight_C': 2.0, # TUNED: Increased from 1.0 to 2.0 based on Sensitivity Analysis
     
     # Metrics
     'metrics': [

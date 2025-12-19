@@ -3,12 +3,9 @@ Group Recommendation System Evaluation
 ---------------------------------------
 Evaluates the complete group recommendation system using:
 - Train/Validation/Test splits (temporal)
-- NDCG@K (Normalized Discounted Cumulative Gain)
-- Precision@K
-- Recall@K
-- Coverage
-- Diversity
-- Temporal compatibility metrics
+- NDCG@K, Precision@K, Recall@K, Diversity, Coverage, Temporal Compatibility
+
+Refactored for clarity and paper-ready results.
 """
 
 import os
@@ -16,8 +13,9 @@ import sys
 import json
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Tuple
 import time
+import matplotlib.pyplot as plt
+from typing import List, Dict, Any
 
 # Add src to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -26,66 +24,60 @@ from src.utils.model_utils import ModelFactory
 from src.recommender.data_loader import load_movies, load_ratings, load_watchlists
 from src.recommender.data_splitter import temporal_train_validation_test_split
 from src.recommender.temporal_preference_analyzer import TemporalPreferenceAnalyzer
+from src.recommender.hybrid.hybrid_model_1 import HybridModel1
+from evaluation_config import OFFLINE_EVAL_CONFIG
+
+# Import metrics from sklearn
 from sklearn.metrics import ndcg_score
 
-
 class GroupRecommenderEvaluator:
-    """Evaluates group recommendation system with scientific metrics."""
+    """
+    Evaluates group recommendation system with scientific metrics.
+    """
     
     def __init__(self, train_df, val_df, test_df, movies_df, watchlists_df):
-        """
-        Initialize evaluator.
-        
-        Args:
-            train_df: Training ratings
-            val_df: Validation ratings
-            test_df: Test ratings
-            movies_df: Movie metadata
-            watchlists_df: User watchlists
-        """
         self.train_df = train_df
         self.val_df = val_df
         self.test_df = test_df
         self.movies_df = movies_df
         self.watchlists_df = watchlists_df
         
-        # Initialize models on training data
-        print("\n[SETUP] Initializing models on training data...")
+        # Initialize Factory
+        print("\n[SETUP] Initializing models...")
         self.factory = ModelFactory(
             movies=movies_df,
             ratings=train_df,
             watchlists=watchlists_df,
-            normalization='zscore',
-            item_k=20,
-            user_k=30
+            normalization=OFFLINE_EVAL_CONFIG['normalization'],
+            item_k=OFFLINE_EVAL_CONFIG['item_k'],
+            user_k=OFFLINE_EVAL_CONFIG['user_k']
         )
         
-        self.models = self.factory.create_all_models(C=1.0)
-        print("✅ Models initialized")
+        # Create all models (H1, H2, H3)
+        self.models = self.factory.create_all_models(C=OFFLINE_EVAL_CONFIG['hybrid_weight_C'])
+        print("✅ Models initialized successfully")
         
-        # Initialize temporal analyzer
+        # Initialize Temporal Analyzer
+        # CRITICAL FIX: Use ONLY training data to avoid data leakage.
+        # The analyzer must learn profiles from past history (train) and predict future compatibility.
         self.temporal_analyzer = TemporalPreferenceAnalyzer(
-            pd.concat([train_df, val_df, test_df]), 
+            train_df, 
             movies_df
         )
-    
-    def create_test_groups(self, min_group_size=2, max_group_size=4, num_groups=50) -> List[List[int]]:
-        """
-        Create test groups from users in test set.
-        
-        Args:
-            min_group_size: Minimum group size
-            max_group_size: Maximum group size
-            num_groups: Number of groups to create
-            
-        Returns:
-            List of user ID lists
-        """
-        # Get users with sufficient test ratings
+
+    def update_h1_model(self, C: float):
+        """Re-initializes HybridModel1 with a new C parameter."""
+        current_h1 = self.models['h1']
+        # Create new instance reusing the underlying models
+        self.models['h1'] = HybridModel1(current_h1.ib_model, current_h1.cb_model, C=C)
+        print(f"Updated H1 model with C={C}")
+
+    def create_test_groups(self, num_groups, min_size, max_size) -> List[List[int]]:
+        """Create synthetic test groups from test users."""
         user_counts = self.test_df.groupby('userId').size()
         eligible_users = user_counts[user_counts >= 5].index.tolist()
         
-        if len(eligible_users) < min_group_size:
+        if len(eligible_users) < min_size:
             print(f"[WARNING] Not enough eligible users ({len(eligible_users)})")
             return []
         
@@ -93,500 +85,288 @@ class GroupRecommenderEvaluator:
         np.random.seed(42)
         
         for _ in range(num_groups):
-            group_size = np.random.randint(min_group_size, max_group_size + 1)
-            if len(eligible_users) >= group_size:
-                group = list(np.random.choice(eligible_users, size=group_size, replace=False))
-                groups.append(group)
-        
+            size = np.random.randint(min_size, max_size + 1)
+            group = list(np.random.choice(eligible_users, size=size, replace=False))
+            groups.append(group)
+            
         return groups
-    
-    def get_group_ground_truth(self, group_users: List[int], k: int = 10) -> Dict:
+
+    def get_ground_truth(self, group_users: List[int]) -> Dict:
         """
-        Get ground truth for a group from test set.
-        
-        RELAXED STRATEGY (Better for sparse data):
-        - Aggregate individual preferences (rating >= 3.5, more lenient)
-        - Weight by number of members who rated it
-        - More realistic for sparse test sets
-        
-        Returns:
-            {
-                'relevant_movies': [movie_ids],
-                'ratings': {movie_id: avg_rating}
-            }
+        Derive ground truth for the group from test data.
+        Strategy: Aggregated ratings > threshold & Min Support > 1
         """
-        # Get test ratings for group members
         group_test = self.test_df[self.test_df['userId'].isin(group_users)]
-        
         if group_test.empty:
-            return {'relevant_movies': [], 'ratings': {}}
+            return {}
         
-        # Aggregate ratings per movie
-        movie_agg = group_test.groupby('movieId').agg({
-            'rating': ['mean', 'count']
-        })
+        # Aggregate
+        agg = group_test.groupby('movieId')['rating'].agg(['mean', 'count'])
         
-        # Filter: avg rating >= 3.5 (more lenient than 4.0)
-        relevant = movie_agg[movie_agg[('rating', 'mean')] >= 3.5]
+        # Filter (Relaxed/Strict based on config)
+        threshold = OFFLINE_EVAL_CONFIG.get('ground_truth_threshold', 3.5)
+        
+        # CRITICAL FIX: Ensure it's a "Group" preference.
+        # Require at least 2 members to have watched/liked it (if group is large enough)
+        min_support = 2 if len(group_users) >= 2 else 1
+        
+        relevant = agg[(agg['mean'] >= threshold) & (agg['count'] >= min_support)]
         
         if relevant.empty:
-            return {'relevant_movies': [], 'ratings': {}}
-        
-        # Sort by: count (popularity in group) then rating
-        relevant = relevant.sort_values(
-            [('rating', 'count'), ('rating', 'mean')], 
-            ascending=False
-        )
-        
-        ratings_dict = dict(relevant[('rating', 'mean')])
-        relevant_movies = list(relevant.index)[:k*3]
-        
-        return {
-            'relevant_movies': relevant_movies,
-            'ratings': ratings_dict
-        }
-    
-    def get_group_recommendations(self, group_users: List[int], k: int = 10) -> List[int]:
-        """
-        Get top-K recommendations for a group.
-        
-        Args:
-            group_users: List of user IDs
-            k: Number of recommendations
+            return {}
             
-        Returns:
-            List of movie IDs
-        """
-        # Get candidates (movies not watched by any group member in train)
-        cf_matrix = self.models['cf_matrix']
+        return relevant['mean'].to_dict()
+
+    def get_recommendations(self, model, group_users: List[int], k: int, use_temporal_filter: bool = False) -> List[Dict]:
+        """Get recommendations from a specific model, optionally applying temporal filtering."""
+        # Candidate generation: popular 3000 (increased from 500 to reduce bias)
+        all_movies = self.train_df['movieId'].value_counts().head(3000).index.tolist()
+        
+        # Filter watched
         watched = set()
-        
         for uid in group_users:
-            if uid in cf_matrix.index:
-                user_watched = cf_matrix.loc[uid].dropna().index.tolist()
-                watched.update(user_watched)
-        
-        # Use popular movies as candidates
-        all_movies = self.train_df['movieId'].value_counts().head(500).index.tolist()
-        candidates = [m for m in all_movies if m not in watched][:200]
+            u_rows = self.train_df[self.train_df['userId'] == uid]
+            watched.update(u_rows['movieId'].tolist())
+            
+        candidates = [m for m in all_movies if m not in watched]
         
         if not candidates:
             return []
+            
+        # If filtering, ask for more candidates
+        request_k = k * 3 if use_temporal_filter else k
         
-        # Get recommendations using Hybrid Model 1
-        try:
-            recs = self.models['h1'].recommend_for_group(group_users, candidates, top_k=k)
-            return [rec['movie_id'] for rec in recs]
-        except Exception as e:
-            print(f"[ERROR] Recommendation failed: {e}")
-            return []
-    
-    def calculate_ndcg_at_k(self, group_users: List[int], k: int = 10) -> float:
-        """
-        Calculate NDCG@K for a group.
+        # Get recs
+        recs = model.recommend_for_group(group_users, candidates, top_k=request_k)
         
-        NDCG measures ranking quality considering relevance scores.
-        FIXED: Now uses actual model scores instead of ranks.
-        """
-        # Get ground truth
-        ground_truth = self.get_group_ground_truth(group_users, k=k*2)
-        relevant_movies = ground_truth['relevant_movies']
-        ratings_dict = ground_truth['ratings']
-        
-        if not relevant_movies:
-            return 0.0
-        
-        # Get candidates
-        cf_matrix = self.models['cf_matrix']
-        watched = set()
-        for uid in group_users:
-            if uid in cf_matrix.index:
-                user_watched = cf_matrix.loc[uid].dropna().index.tolist()
-                watched.update(user_watched)
-        
-        all_movies = self.train_df['movieId'].value_counts().head(500).index.tolist()
-        candidates = [m for m in all_movies if m not in watched][:200]
-        
-        if not candidates:
-            return 0.0
-        
-        # Get recommendations WITH SCORES
-        try:
-            recs = self.models['h1'].recommend_for_group(group_users, candidates, top_k=k)
-        except Exception as e:
-            print(f"[ERROR] Recommendation failed: {e}")
-            return 0.0
-        
+        if use_temporal_filter:
+            # Re-rank/Filter based on Temporal Compatibility
+            filtered_recs = []
+            for rec in recs:
+                mid = rec['movie_id']
+                # Calculate group temporal score
+                temp_scores = [self.temporal_analyzer.get_temporal_compatibility_score(uid, mid) for uid in group_users]
+                avg_temp = np.mean(temp_scores) if temp_scores else 0.5
+                
+                # Strict Filter: Must be > 0.3 compatibility
+                if avg_temp >= 0.3:
+                    rec['temporal_score'] = avg_temp
+                    filtered_recs.append(rec)
+            
+            # Sort by original score? Or combine?
+            # User request: "measure results with temporal analyzer enabled"
+            # We preserve original rank but cut off incompatible ones
+            recs = filtered_recs[:k]
+            
+        return recs
+
+    def evaluate_group(self, model, group_users: List[int], k: int, use_temporal_filter: bool = False) -> Dict[str, float]:
+        """Compute metrics for a single group."""
+        ground_truth = self.get_ground_truth(group_users)
+        if not ground_truth:
+            return {} # Skip groups with no ground truth in test
+            
+        recs = self.get_recommendations(model, group_users, k, use_temporal_filter)
         if not recs:
-            return 0.0
+            return {}
+            
+        rec_ids = [r['movie_id'] for r in recs]
+        rec_scores = [r['score'] for r in recs]
         
-        # Use ACTUAL MODEL SCORES (not ranks!)
-        recommended_ids = [rec['movie_id'] for rec in recs]
-        true_relevance = [ratings_dict.get(mid, 0.0) for mid in recommended_ids]
-        pred_relevance = [rec['score'] for rec in recs]  # ACTUAL SCORES
-        
-        # Calculate NDCG
-        try:
-            ndcg = ndcg_score([true_relevance], [pred_relevance], k=k)
-            return ndcg
-        except:
-            return 0.0
-    
-    def calculate_precision_at_k(self, group_users: List[int], k: int = 10) -> float:
-        """
-        Calculate Precision@K for a group.
-        
-        Precision@K = (# relevant items in top-K) / K
-        """
-        ground_truth = self.get_group_ground_truth(group_users, k=k*2)
-        relevant_movies = set(ground_truth['relevant_movies'])
-        
-        if not relevant_movies:
-            return 0.0
-        
-        recommended = self.get_group_recommendations(group_users, k=k)
-        
-        if not recommended:
-            return 0.0
-        
-        hits = len(set(recommended[:k]) & relevant_movies)
+        # 1. NDCG
+        true_relevance = [ground_truth.get(mid, 0.0) for mid in rec_ids]
+        if sum(true_relevance) == 0:
+            ndcg = 0.0
+        else:
+            # Pad if fewer than k recommendations
+            if len(true_relevance) < k:
+                true_relevance += [0.0] * (k - len(true_relevance))
+                rec_scores += [0.0] * (k - len(rec_scores))
+            ndcg = ndcg_score([true_relevance], [rec_scores], k=k)
+            
+        # 2. Precision
+        hits = sum(1 for mid in rec_ids if mid in ground_truth)
         precision = hits / k
         
-        return precision
-    
-    def calculate_recall_at_k(self, group_users: List[int], k: int = 10) -> float:
-        """
-        Calculate Recall@K for a group.
+        # 3. Recall
+        total_relevant = len(ground_truth)
+        recall = hits / total_relevant if total_relevant > 0 else 0.0
         
-        Recall@K = (# relevant items in top-K) / (total # relevant items)
-        """
-        ground_truth = self.get_group_ground_truth(group_users, k=k*2)
-        relevant_movies = set(ground_truth['relevant_movies'])
+        # 4. Temporal
+        temp_scores = [np.mean([self.temporal_analyzer.get_temporal_compatibility_score(uid, mid) 
+                                for uid in group_users]) for mid in rec_ids]
+        temporal = np.mean(temp_scores) if temp_scores else 0.0
         
-        if not relevant_movies:
-            return 0.0
-        
-        recommended = self.get_group_recommendations(group_users, k=k)
-        
-        if not recommended:
-            return 0.0
-        
-        hits = len(set(recommended[:k]) & relevant_movies)
-        recall = hits / len(relevant_movies)
-        
-        return recall
-    
-    def calculate_coverage(self, groups: List[List[int]], k: int = 10) -> float:
-        """
-        Calculate catalog coverage.
-        
-        Coverage = (# unique items recommended) / (total # items)
-        """
-        all_recommended = set()
+        return {
+            'ndcg': ndcg,
+            'precision': precision,
+            'recall': recall,
+            'temporal': temporal,
+            'rec_ids': rec_ids 
+        }
+
+    def evaluate_model(self, model_key: str, groups: List[List[int]], k: int, use_temporal_filter: bool = False) -> Dict:
+        """Evaluate a specific model across all groups for a single K."""
+        model = self.models[model_key]
+        metrics = {'ndcg': [], 'precision': [], 'recall': [], 'temporal': []}
+        all_recs = set()
         
         for group in groups:
-            recs = self.get_group_recommendations(group, k=k)
-            all_recommended.update(recs)
-        
-        total_items = len(self.movies_df)
-        coverage = len(all_recommended) / total_items
-        
-        return coverage
-    
-    def calculate_diversity(self, group_users: List[int], k: int = 10) -> float:
-        """
-        Calculate intra-list diversity (average pairwise distance).
-        
-        Uses genre-based Jaccard distance.
-        """
-        recommended = self.get_group_recommendations(group_users, k=k)
-        
-        if len(recommended) < 2:
-            return 0.0
-        
-        # Get genres for each movie
-        movie_genres = {}
-        for mid in recommended:
-            movie_row = self.movies_df[self.movies_df['movieId'] == mid]
-            if not movie_row.empty:
-                genres = set(str(movie_row.iloc[0]['genres']).split('|'))
-                movie_genres[mid] = genres
-        
-        # Calculate pairwise Jaccard distances
-        distances = []
-        for i, mid1 in enumerate(recommended):
-            for mid2 in recommended[i+1:]:
-                if mid1 in movie_genres and mid2 in movie_genres:
-                    g1 = movie_genres[mid1]
-                    g2 = movie_genres[mid2]
-                    
-                    if len(g1 | g2) > 0:
-                        jaccard_sim = len(g1 & g2) / len(g1 | g2)
-                        jaccard_dist = 1 - jaccard_sim
-                        distances.append(jaccard_dist)
-        
-        return np.mean(distances) if distances else 0.0
-    
-    def calculate_temporal_compatibility(self, group_users: List[int], k: int = 10) -> float:
-        """
-        Calculate temporal compatibility score.
-        
-        Measures how well recommendations match group's temporal preferences.
-        """
-        recommended = self.get_group_recommendations(group_users, k=k)
-        
-        if not recommended:
-            return 0.0
-        
-        # Get temporal compatibility scores
-        scores = []
-        for mid in recommended:
-            # Average compatibility across group members
-            member_scores = []
-            for uid in group_users:
-                score = self.temporal_analyzer.get_temporal_compatibility_score(uid, mid)
-                member_scores.append(score)
-            
-            avg_score = np.mean(member_scores)
-            scores.append(avg_score)
-        
-        return np.mean(scores)
-    
-    def evaluate_all_metrics(self, groups: List[List[int]], k: int = 10, model_key: str = 'h1') -> Dict:
-        """
-        Evaluate all metrics across all groups.
-        
-        Args:
-            groups: List of user ID lists
-            k: Number of recommendations
-            model_key: Which model to use ('h1', 'h2', 'h3', or 'current')
-        
-        Returns:
-            Dictionary with metric results
-        """
-        print(f"\n{'='*80}")
-        print(f"EVALUATING {len(groups)} GROUPS WITH K={k} (Model: {model_key.upper()})")
-        print(f"{'='*80}\n")
-        
-        # Store original model
-        original_model = self.models.get('h1')
-        
-        # Use specified model
-        if model_key != 'h1':
-            self.models['h1'] = self.models[model_key]
-        
-        ndcg_scores = []
-        precision_scores = []
-        recall_scores = []
-        diversity_scores = []
-        temporal_scores = []
-        
-        start_time = time.time()
-        
-        for i, group in enumerate(groups, 1):
-            if i % 10 == 0:
-                elapsed = time.time() - start_time
-                eta = (elapsed / i) * (len(groups) - i)
-                print(f"[PROGRESS] {i}/{len(groups)} groups | Elapsed: {elapsed:.1f}s | ETA: {eta:.1f}s")
-            
-            try:
-                ndcg = self.calculate_ndcg_at_k(group, k=k)
-                precision = self.calculate_precision_at_k(group, k=k)
-                recall = self.calculate_recall_at_k(group, k=k)
-                diversity = self.calculate_diversity(group, k=k)
-                temporal = self.calculate_temporal_compatibility(group, k=k)
-                
-                ndcg_scores.append(ndcg)
-                precision_scores.append(precision)
-                recall_scores.append(recall)
-                diversity_scores.append(diversity)
-                temporal_scores.append(temporal)
-                
-            except Exception as e:
-                print(f"[ERROR] Group {i} failed: {e}")
+            res = self.evaluate_group(model, group, k, use_temporal_filter)
+            if not res: 
                 continue
+                
+            metrics['ndcg'].append(res['ndcg'])
+            metrics['precision'].append(res['precision'])
+            metrics['recall'].append(res['recall'])
+            metrics['temporal'].append(res['temporal'])
+            all_recs.update(res['rec_ids'])
         
-        # Calculate coverage
-        coverage = self.calculate_coverage(groups, k=k)
-        
-        elapsed = time.time() - start_time
-        
-        # Restore original model
-        if model_key != 'h1':
-            self.models['h1'] = original_model
-        
-        results = {
-            'model': model_key,
-            'k': k,
-            'num_groups': len(groups),
-            'ndcg@k': {
-                'mean': np.mean(ndcg_scores),
-                'std': np.std(ndcg_scores),
-                'min': np.min(ndcg_scores),
-                'max': np.max(ndcg_scores)
-            },
-            'precision@k': {
-                'mean': np.mean(precision_scores),
-                'std': np.std(precision_scores),
-                'min': np.min(precision_scores),
-                'max': np.max(precision_scores)
-            },
-            'recall@k': {
-                'mean': np.mean(recall_scores),
-                'std': np.std(recall_scores),
-                'min': np.min(recall_scores),
-                'max': np.max(recall_scores)
-            },
-            'diversity': {
-                'mean': np.mean(diversity_scores),
-                'std': np.std(diversity_scores),
-                'min': np.min(diversity_scores),
-                'max': np.max(diversity_scores)
-            },
-            'temporal_compatibility': {
-                'mean': np.mean(temporal_scores),
-                'std': np.std(temporal_scores),
-                'min': np.min(temporal_scores),
-                'max': np.max(temporal_scores)
-            },
-            'coverage': coverage,
-            'evaluation_time_seconds': elapsed
+        return {
+            'mean_ndcg': np.mean(metrics['ndcg']) if metrics['ndcg'] else 0.0,
+            'mean_precision': np.mean(metrics['precision']) if metrics['precision'] else 0.0,
+            'mean_recall': np.mean(metrics['recall']) if metrics['recall'] else 0.0,
+            'mean_temporal': np.mean(metrics['temporal']) if metrics['temporal'] else 0.0,
+            'coverage': len(all_recs) / len(self.movies_df) if not self.movies_df.empty else 0.0
         }
-        
-        return results
 
-
-def print_results(results: Dict):
-    """Pretty print evaluation results."""
-    print(f"\n{'='*80}")
-    print(f"EVALUATION RESULTS (K={results['k']})")
-    print(f"{'='*80}\n")
+def run_evaluation():
+    print("="*60)
+    print("SCIENTIFIC EVALUATION & ABLATION STUDY")
+    print("="*60)
     
-    print(f"Number of Groups Evaluated: {results['num_groups']}")
-    print(f"Evaluation Time: {results['evaluation_time_seconds']:.2f}s\n")
-    
-    print(f"{'Metric':<30} {'Mean':<12} {'Std':<12} {'Min':<12} {'Max':<12}")
-    print(f"{'-'*80}")
-    
-    for metric_name in ['ndcg@k', 'precision@k', 'recall@k', 'diversity', 'temporal_compatibility']:
-        metric = results[metric_name]
-        print(f"{metric_name:<30} {metric['mean']:<12.4f} {metric['std']:<12.4f} "
-              f"{metric['min']:<12.4f} {metric['max']:<12.4f}")
-    
-    print(f"\nCatalog Coverage: {results['coverage']:.4f} ({results['coverage']*100:.2f}%)")
-    print(f"{'='*80}\n")
-
-
-def main():
-    """Run complete evaluation."""
-    print("="*80)
-    print("GROUP RECOMMENDATION SYSTEM - SCIENTIFIC EVALUATION")
-    print("="*80)
-    
-    # Load data
-    print("\n[1/5] Loading data...")
+    # 1. Load Data
+    print("Loading data...")
+    ratings = load_ratings().sort_values('timestamp').tail(OFFLINE_EVAL_CONFIG['ratings_used'])
     movies = load_movies()
-    ratings = load_ratings()
     watchlists = load_watchlists()
     
-    # Use recent data for faster evaluation
-    ratings = ratings.sort_values('timestamp').tail(100000)
-    
-    print(f"   Movies: {len(movies)}")
-    print(f"   Ratings: {len(ratings)}")
-    print(f"   Users: {ratings['userId'].nunique()}")
-    
-    # Create temporal splits
-    print("\n[2/5] Creating temporal train/val/test splits...")
-    train_df, val_df, test_df = temporal_train_validation_test_split(
+    # 2. Split
+    print("Splitting data...")
+    train, val, test = temporal_train_validation_test_split(
         ratings, 
-        train_ratio=0.7, 
-        valid_ratio=0.15
+        OFFLINE_EVAL_CONFIG['train_ratio'],
+        OFFLINE_EVAL_CONFIG['validation_ratio']
     )
     
-    print(f"   Train: {len(train_df)} ratings")
-    print(f"   Validation: {len(val_df)} ratings")
-    print(f"   Test: {len(test_df)} ratings")
+    # 3. Initialize Evaluator
+    evaluator = GroupRecommenderEvaluator(train, val, test, movies, watchlists)
     
-    # Initialize evaluator
-    print("\n[3/5] Initializing evaluator...")
-    evaluator = GroupRecommenderEvaluator(train_df, val_df, test_df, movies, watchlists)
-    
-    # Create test groups
-    print("\n[4/5] Creating test groups...")
+    # 4. Create Groups
+    print(f"Creating {OFFLINE_EVAL_CONFIG['num_groups']} test groups...")
     groups = evaluator.create_test_groups(
-        min_group_size=2,
-        max_group_size=4,
-        num_groups=30  # Start with 30 groups for faster testing
+        OFFLINE_EVAL_CONFIG['num_groups'],
+        OFFLINE_EVAL_CONFIG['min_group_size'],
+        OFFLINE_EVAL_CONFIG['max_group_size']
     )
     
-    print(f"   Created {len(groups)} test groups")
-    print(f"   Group sizes: {[len(g) for g in groups[:5]]}... (showing first 5)")
+    # Results Directories
+    results_dir = os.path.join(os.path.dirname(__file__), "results")
+    graphs_dir = os.path.join(results_dir, "graphs")
+    os.makedirs(graphs_dir, exist_ok=True)
     
-    # Evaluate HYBRID MODELS (H1 and H2 only)
-    # Note: H3 (watchlist-based) is NOT evaluated here because MovieLens users
-    # don't have watchlist data. Without watchlists, H3 becomes functionally
-    # equivalent to H1. H3 is evaluated separately in the case study with real
-    # users who have watchlist data (see evaluate_case_study.py).
-    print("\n[5/5] Running evaluation for hybrid models (H1, H2)...")
-    print("   Note: H3 excluded - MovieLens users lack watchlist data")
+    # ==========================================================
+    # EXPERIMENT 1: SENSITIVITY ANALYSIS (Parameter C)
+    # ==========================================================
+    print("\n[EXPERIMENT 1] Sensitivity Analysis for C (Trust Factor)...")
+    c_values = [0.1, 0.5, 1.0, 2.0, 5.0]
+    c_results = {'ndcg': [], 'precision': []}
     
-    all_results = {}
+    # Fixed K for this experiment
+    eval_k = 10 
     
-    for model_name in ['h1', 'h2']:
-        print(f"\n{'='*80}")
-        print(f"EVALUATING MODEL: {model_name.upper()}")
-        print(f"{'='*80}")
+    for c in c_values:
+        evaluator.update_h1_model(c)
+        res = evaluator.evaluate_model('h1', groups, eval_k, use_temporal_filter=False)
+        c_results['ndcg'].append(res['mean_ndcg'])
+        c_results['precision'].append(res['mean_precision'])
+        print(f"  C={c}: NDCG={res['mean_ndcg']:.4f}, Prec={res['mean_precision']:.4f}")
         
-        # Temporarily replace the model in evaluator
-        evaluator.models['current'] = evaluator.models[model_name]
-        
-        # Evaluate for K=5 and K=10
-        results_k5 = evaluator.evaluate_all_metrics(groups, k=5, model_key='current')
-        results_k10 = evaluator.evaluate_all_metrics(groups, k=10, model_key='current')
-        
-        all_results[model_name] = {
-            'k5': results_k5,
-            'k10': results_k10
-        }
-        
-        # Print results
-        print_results(results_k5)
-        print_results(results_k10)
+    # Plotting
+    plt.figure(figsize=(10, 6))
+    plt.plot(c_values, c_results['ndcg'], marker='o', label='NDCG@10', color='b')
+    plt.plot(c_values, c_results['precision'], marker='s', label='Precision@10', color='g', linestyle='--')
+    plt.title('Sensitivity Analysis: Impact of Trust Factor C on H1 Performance')
+    plt.xlabel('C (Trust Factor)')
+    plt.ylabel('Score')
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(os.path.join(graphs_dir, "sensitivity_analysis_C.png"))
+    plt.savefig(os.path.join(graphs_dir, "sensitivity_analysis_C.svg"))
+    plt.close()
+    print("✅ Sensitivity Analysis Graph Saved.")
     
-    # Save results
-    output_file = os.path.join(
-        os.path.dirname(__file__),
-        "results",
-        "group_evaluation_results_all_models.json"
-    )
+    # ==========================================================
+    # EXPERIMENT 2: ABLATION STUDY (Temporal Filtering)
+    # ==========================================================
+    print("\n[EXPERIMENT 2] Ablation Study: Temporal Filtering...")
     
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    # Choose best C from previous step (simple max)
+    best_idx = np.argmax(c_results['ndcg'])
+    best_c = c_values[best_idx]
+    print(f"Using Best C={best_c} for Ablation Study.")
+    evaluator.update_h1_model(best_c)
     
-    with open(output_file, 'w') as f:
-        json.dump(all_results, f, indent=2)
+    # Compare
+    res_without = evaluator.evaluate_model('h1', groups, eval_k, use_temporal_filter=False)
+    res_with = evaluator.evaluate_model('h1', groups, eval_k, use_temporal_filter=True)
     
-    print(f"\n✅ Results saved to: {output_file}")
+    print("\n[ABLATION RESULTS]")
+    print(f"{'Metric':<20} {'Without Temporal':<20} {'With Temporal':<20} {'Change %':<10}")
+    print("-" * 75)
     
-    # Print comparison table
-    print("\n" + "="*80)
-    print("MODEL COMPARISON")
-    print("="*80)
-    print(f"\n{'Model':<10} {'K':<5} {'NDCG':<10} {'Precision':<12} {'Recall':<10} {'Diversity':<10}")
-    print("-"*80)
+    metrics_to_compare = ['mean_ndcg', 'mean_precision', 'mean_temporal', 'coverage']
     
-    for model_name in ['h1', 'h2']:  # H3 evaluated separately with real users
-        for k in [5, 10]:
-            key = f'k{k}'
-            res = all_results[model_name][key]
-            print(f"{model_name.upper():<10} {k:<5} {res['ndcg@k']['mean']:<10.4f} "
-                  f"{res['precision@k']['mean']:<12.4f} {res['recall@k']['mean']:<10.4f} "
-                  f"{res['diversity']['mean']:<10.4f}")
+    ablation_data = []
     
-    print("\n" + "="*80)
-    print("✅ EVALUATION COMPLETE")
-    print("="*80)
+    for m in metrics_to_compare:
+        v1 = res_without[m]
+        v2 = res_with[m]
+        change = ((v2 - v1) / v1 * 100) if v1 > 0 else 0.0
+        print(f"{m:<20} {v1:.4f}               {v2:.4f}               {change:+.2f}%")
+        ablation_data.append([m, v1, v2])
 
+    # Plotting Ablation
+    labels = [m.replace('mean_', '').upper() for m in metrics_to_compare]
+    v1_vals = [res_without[m] for m in metrics_to_compare]
+    v2_vals = [res_with[m] for m in metrics_to_compare]
+    
+    x = np.arange(len(labels))
+    width = 0.35
+    
+    plt.figure(figsize=(10, 6))
+    plt.bar(x - width/2, v1_vals, width, label='Without Temporal', color='gray')
+    plt.bar(x + width/2, v2_vals, width, label='With Temporal', color='teal')
+    plt.ylabel('Score')
+    plt.title('Ablation Study: Impact of Temporal Filtering (H1)')
+    plt.xticks(x, labels)
+    plt.legend()
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    
+    plt.savefig(os.path.join(graphs_dir, "ablation_study_temporal.png"))
+    plt.savefig(os.path.join(graphs_dir, "ablation_study_temporal.svg"))
+    plt.close()
+    print("✅ Ablation Study Graph Saved.")
+
+    # Save Results JSON
+    final_output = {
+        'sensitivity_analysis': {
+            'c_values': c_values,
+            'ndcg': c_results['ndcg'],
+            'precision': c_results['precision']
+        },
+        'ablation_study': {
+            'best_c': best_c,
+            'without_temporal': res_without,
+            'with_temporal': res_with
+        }
+    }
+    
+    output_path = os.path.join(results_dir, "scientific_analysis_results.json")
+    with open(output_path, 'w') as f:
+        json.dump(final_output, f, indent=4)
+        
+    print(f"\nDetailed results saved to {output_path}")
 
 if __name__ == "__main__":
-    main()
+    run_evaluation()

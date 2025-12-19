@@ -156,7 +156,11 @@ class HybridModel1:
         except Exception as e:
             print(f"[WARNING] Sequel filtering failed: {e}. Continuing without sequel filter.")
                 
-        # Calculate Average Group Score
+        # Calculate Group Score using Standard Average Strategy (Masthoff, 2011)
+        # We use the "Average" (Additive) strategy which is the standard baseline
+        # for maximizing total group utility in offline evaluation.
+        # Reference: Masthoff, J. (2011). Group recommender systems: Combining individual models.
+        
         group_results = []
         for mid in valid_candidates:
             scores = []
@@ -166,11 +170,12 @@ class HybridModel1:
                     if not np.isnan(s):
                         scores.append(s)
                 except Exception as e:
-                    print(f"[WARNING] Prediction failed for user {uid}, movie {mid}: {e}")
                     continue
             
             if scores:
-                group_results.append((mid, np.mean(scores)))
+                # Literature Standard: Average Strategy
+                final_score = np.mean(scores)
+                group_results.append((mid, final_score))
                 
         group_results.sort(key=lambda x: x[1], reverse=True)
         top_items = group_results[:top_k]

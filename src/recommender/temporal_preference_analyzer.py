@@ -5,8 +5,8 @@ Analyzes users' temporal viewing patterns to ensure recommendations
 match their historical preferences regarding movie release years.
 
 Key Features:
-- Detects if a user prefers recent vs classic movies
-- Calculates temporal preference scores
+- Detects if a user prefers movies from specific eras (e.g. 90s, 2020s)
+- Calculates temporal preference scores based on release year distribution
 - Filters recommendations based on temporal compatibility
 """
 
@@ -19,6 +19,7 @@ from datetime import datetime
 class TemporalPreferenceAnalyzer:
     """
     Analyzes temporal patterns in user viewing history to improve recommendations.
+    Uses the distribution of release years of movies the user liked.
     """
     
     def __init__(self, ratings_df: pd.DataFrame, movies_df: pd.DataFrame):
@@ -33,13 +34,14 @@ class TemporalPreferenceAnalyzer:
         self.movies = movies_df.copy()
         
         # Merge to get movie years with ratings
+        # Use inner join or left join, but we need years
         self.enriched_ratings = self.ratings.merge(
             self.movies[['movieId', 'year']], 
             on='movieId', 
             how='left'
         )
         
-        # Calculate current year for recency calculations
+        # Calculate current year
         self.current_year = datetime.now().year
         
         # Cache for user profiles
@@ -47,91 +49,82 @@ class TemporalPreferenceAnalyzer:
     
     def get_user_temporal_profile(self, user_id: int) -> Dict:
         """
-        Analyze a user's temporal viewing preferences.
+        Analyze a user's temporal viewing preferences based on Release Years.
         
         Returns:
             Dict with keys:
-                - 'avg_movie_age': Average age of movies watched (in years)
-                - 'preference_type': 'recent', 'classic', 'mixed'
-                - 'year_range': (min_year, max_year) watched
-                - 'recency_score': 0-1, higher means prefers newer movies
-                - 'min_acceptable_year': Minimum year to recommend
-                - 'max_acceptable_year': Maximum year to recommend
+                - 'mean_release_year': Weighted average release year of liked movies
+                - 'std_release_year': Standard deviation of release years
+                - 'preference_type': 'modern', 'classic', 'era_specific', 'broad'
+                - 'year_range': (min_year, max_year) of interest
+                - 'recency_bias': deviation from current year
         """
         if user_id in self._user_profiles:
             return self._user_profiles[user_id]
         
+        # Get user ratings
         user_ratings = self.enriched_ratings[
             self.enriched_ratings['userId'] == user_id
         ].copy()
         
         if len(user_ratings) == 0:
-            # No history, return neutral profile
             return self._neutral_profile()
         
-        # Filter out movies with missing years
-        user_ratings = user_ratings[user_ratings['year'] > 0]
+        # Filter out movies with missing years and keep only "liked" movies (rating >= 3.0)
+        # We consider 3.0 as neutral/positive enough to signal interest in that era
+        valid_ratings = user_ratings[
+            (user_ratings['year'] > 1900) & 
+            (user_ratings['rating'] >= 3.0)
+        ]
         
-        if len(user_ratings) == 0:
+        if len(valid_ratings) < 5:
+            # Fallback to all ratings if not enough positive ones
+            valid_ratings = user_ratings[user_ratings['year'] > 1900]
+            
+        if len(valid_ratings) == 0:
             return self._neutral_profile()
+            
+        # Weighted statistics based on rating
+        # Higher rated movies contribute more to the mean year
+        years = valid_ratings['year'].values
+        weights = valid_ratings['rating'].values
         
-        # Calculate movie ages at time of rating
-        user_ratings['rating_timestamp'] = pd.to_datetime(
-            user_ratings['timestamp'], 
-            unit='s', 
-            errors='coerce'
-        )
-        user_ratings['rating_year'] = user_ratings['rating_timestamp'].dt.year
-        user_ratings['movie_age_at_rating'] = (
-            user_ratings['rating_year'] - user_ratings['year']
-        )
+        # Weighted Mean
+        mean_year = np.average(years, weights=weights)
         
-        # Calculate statistics
-        avg_movie_age = user_ratings['movie_age_at_rating'].mean()
-        std_movie_age = user_ratings['movie_age_at_rating'].std()
-        min_year = user_ratings['year'].min()
-        max_year = user_ratings['year'].max()
-        
-        # Calculate recency score (0 = only old movies, 1 = only new movies)
-        # Based on average age: 0 years old = 1.0, 50+ years old = 0.0
-        recency_score = max(0, min(1, 1 - (avg_movie_age / 50)))
+        # Weighted Variance/Std
+        variance = np.average((years - mean_year)**2, weights=weights)
+        std_year = np.sqrt(variance)
         
         # Determine preference type
-        if avg_movie_age < 5:
-            preference_type = 'recent'
-        elif avg_movie_age > 20:
-            preference_type = 'classic'
+        current_era_threshold = self.current_year - 5
+        
+        if mean_year >= current_era_threshold:
+            preference_type = 'modern'  # Likes very recent stuff
+        elif std_year < 5:
+            preference_type = 'era_specific' # Focused on a specific time (e.g. only 90s)
+        elif std_year > 15:
+            preference_type = 'broad' # Watches everything
         else:
-            preference_type = 'mixed'
+            preference_type = 'classic' # Generally older movies
+            
+        # Calculate acceptance range (Mean +/- 2 STD, clamped)
+        # We assume a minimum std of 5 years to avoid being too restrictive
+        effective_std = max(5.0, std_year)
         
-        # Calculate acceptable year range for recommendations
-        # Use mean ± 1.5 * std as acceptable range
-        if std_movie_age > 0:
-            year_tolerance = 1.5 * std_movie_age
-        else:
-            year_tolerance = 10  # Default tolerance
+        min_acceptable = int(mean_year - (2.0 * effective_std))
+        max_acceptable = int(mean_year + (2.0 * effective_std))
         
-        # Calculate based on movie ages, then convert to years
-        min_acceptable_age = max(0, avg_movie_age - year_tolerance)
-        max_acceptable_age = avg_movie_age + year_tolerance
-        
-        # Convert ages back to years
-        min_acceptable_year = int(self.current_year - max_acceptable_age)
-        max_acceptable_year = int(self.current_year - min_acceptable_age)
-        
-        # Ensure reasonable bounds
-        min_acceptable_year = max(1900, min_acceptable_year)
-        max_acceptable_year = min(self.current_year + 2, max_acceptable_year)
+        # Clamp to realistic values
+        min_acceptable = max(1900, min_acceptable)
+        max_acceptable = min(self.current_year + 1, max_acceptable)
         
         profile = {
-            'avg_movie_age': float(avg_movie_age),
-            'std_movie_age': float(std_movie_age),
+            'mean_release_year': float(mean_year),
+            'std_release_year': float(std_year),
             'preference_type': preference_type,
-            'year_range': (int(min_year), int(max_year)),
-            'recency_score': float(recency_score),
-            'min_acceptable_year': min_acceptable_year,
-            'max_acceptable_year': max_acceptable_year,
-            'total_ratings': len(user_ratings)
+            'year_range': (min_acceptable, max_acceptable),
+            'total_ratings': len(valid_ratings)
         }
         
         self._user_profiles[user_id] = profile
@@ -140,13 +133,10 @@ class TemporalPreferenceAnalyzer:
     def _neutral_profile(self) -> Dict:
         """Return a neutral profile for users with no history."""
         return {
-            'avg_movie_age': 15.0,
-            'std_movie_age': 15.0,
-            'preference_type': 'mixed',
-            'year_range': (1980, self.current_year),
-            'recency_score': 0.5,
-            'min_acceptable_year': 1980,
-            'max_acceptable_year': self.current_year + 2,
+            'mean_release_year': float(self.current_year - 15), # ~2010
+            'std_release_year': 20.0,
+            'preference_type': 'broad',
+            'year_range': (1970, self.current_year + 1),
             'total_ratings': 0
         }
     
@@ -158,46 +148,25 @@ class TemporalPreferenceAnalyzer:
     ) -> bool:
         """
         Check if a movie's release year is compatible with user's preferences.
-        
-        Args:
-            user_id: User ID
-            movie_id: Movie ID
-            strict: If True, use stricter filtering
-            
-        Returns:
-            True if movie is temporally compatible
         """
         profile = self.get_user_temporal_profile(user_id)
         
-        # Get movie year
         movie_year = self.movies[
             self.movies['movieId'] == movie_id
         ]['year'].values
         
         if len(movie_year) == 0 or movie_year[0] == 0:
-            # Unknown year, allow it (neutral)
-            return True
+            return True # Unknown year, benefit of doubt
         
-        movie_year = int(movie_year[0])
+        year = int(movie_year[0])
         
         if strict:
-            # Strict mode: must be within acceptable range
-            return (
-                profile['min_acceptable_year'] <= movie_year <= 
-                profile['max_acceptable_year']
-            )
+            return profile['year_range'][0] <= year <= profile['year_range'][1]
         else:
-            # Lenient mode: allow some flexibility
-            # Expand range by 50%
-            tolerance = (
-                profile['max_acceptable_year'] - 
-                profile['min_acceptable_year']
-            ) * 0.5
-            
-            min_year = profile['min_acceptable_year'] - tolerance
-            max_year = profile['max_acceptable_year'] + tolerance
-            
-            return min_year <= movie_year <= max_year
+            # Lenient: Expand range by 50% of width
+            width = profile['year_range'][1] - profile['year_range'][0]
+            margin = width * 0.25
+            return (profile['year_range'][0] - margin) <= year <= (profile['year_range'][1] + margin)
     
     def get_temporal_compatibility_score(
         self, 
@@ -205,36 +174,25 @@ class TemporalPreferenceAnalyzer:
         movie_id: int
     ) -> float:
         """
-        Calculate a compatibility score (0-1) based on temporal preferences.
-        
-        Returns:
-            Float between 0 (incompatible) and 1 (perfect match)
+        Calculate a compatibility score (0-1) based on release year Gaussian.
         """
         profile = self.get_user_temporal_profile(user_id)
         
-        # Get movie year
         movie_year = self.movies[
             self.movies['movieId'] == movie_id
         ]['year'].values
         
         if len(movie_year) == 0 or movie_year[0] == 0:
-            # Unknown year, return neutral score
             return 0.5
         
-        movie_year = int(movie_year[0])
-        movie_age = self.current_year - movie_year
+        year = int(movie_year[0])
         
-        # Calculate distance from user's average preference
-        avg_age = profile['avg_movie_age']
-        std_age = profile['std_movie_age']
+        # Gaussian decay from mean_release_year
+        mean = profile['mean_release_year']
+        std = max(10.0, profile['std_release_year']) # Minimum spread of 10 years
         
-        if std_age == 0:
-            std_age = 10  # Default
-        
-        # Use Gaussian distribution
-        # Score is highest when movie age matches user's average
-        distance = abs(movie_age - avg_age)
-        score = np.exp(-(distance ** 2) / (2 * (std_age ** 2)))
+        diff = abs(year - mean)
+        score = np.exp(-(diff ** 2) / (2 * (std ** 2)))
         
         return float(score)
     
@@ -244,54 +202,38 @@ class TemporalPreferenceAnalyzer:
         movie_ids: List[int]
     ) -> Dict[int, float]:
         """
-        OPTIMIZED: Vectorized temporal compatibility for multiple movies.
-        
-        Complexity: O(n+m) instead of O(n*m) where n=users, m=movies
-        
-        Args:
-            user_id: User ID
-            movie_ids: List of movie IDs
-            
-        Returns:
-            Dict mapping movie_id -> compatibility_score
+        Vectorized temporal compatibility for multiple movies.
         """
         profile = self.get_user_temporal_profile(user_id)
         
-        # Get all movie years at once (vectorized)
+        # Get movie years
         movie_years_df = self.movies[
             self.movies['movieId'].isin(movie_ids)
         ][['movieId', 'year']].copy()
         
-        # Filter out movies with missing years
         movie_years_df = movie_years_df[movie_years_df['year'] > 0]
         
         if movie_years_df.empty:
-            # All unknown years, return neutral scores
             return {mid: 0.5 for mid in movie_ids}
         
-        # Calculate ages (vectorized)
-        movie_years_df['age'] = self.current_year - movie_years_df['year']
+        mean = profile['mean_release_year']
+        std = max(10.0, profile['std_release_year'])
         
-        # Calculate distances from user's average preference
-        avg_age = profile['avg_movie_age']
-        std_age = profile['std_movie_age'] if profile['std_movie_age'] > 0 else 10
-        
-        # Vectorized Gaussian calculation
-        movie_years_df['distance'] = np.abs(movie_years_df['age'] - avg_age)
+        # Vectorized Gaussian
+        movie_years_df['diff'] = np.abs(movie_years_df['year'] - mean)
         movie_years_df['score'] = np.exp(
-            -(movie_years_df['distance'] ** 2) / (2 * (std_age ** 2))
+            -(movie_years_df['diff'] ** 2) / (2 * (std ** 2))
         )
         
-        # Create result dictionary
         result = dict(zip(movie_years_df['movieId'], movie_years_df['score']))
         
-        # Fill in missing movies with neutral score
+        # Fill missing
         for mid in movie_ids:
             if mid not in result:
                 result[mid] = 0.5
-        
+                
         return result
-    
+
     def filter_recommendations_by_temporal_fit(
         self,
         user_id: int,
@@ -300,129 +242,68 @@ class TemporalPreferenceAnalyzer:
         strict: bool = False
     ) -> List[Tuple[int, float]]:
         """
-        Filter and score candidate movies by temporal compatibility.
-        
-        OPTIMIZED: Uses batch processing for better performance.
-        
-        Args:
-            user_id: User ID
-            candidate_movies: List of movie IDs to filter
-            min_score: Minimum compatibility score to keep
-            strict: Use strict filtering
-            
-        Returns:
-            List of (movie_id, temporal_score) tuples, sorted by score
+        Filter recommendations based on temporal fit.
         """
-        # Use batch processing
         scores = self.get_temporal_compatibility_batch(user_id, candidate_movies)
+        filtered = []
         
-        results = []
-        
-        for movie_id, score in scores.items():
-            if strict:
-                # Check strict compatibility
-                if not self.is_movie_temporally_compatible(
-                    user_id, movie_id, strict=True
-                ):
-                    continue
-            
+        for mid, score in scores.items():
+            if strict and not self.is_movie_temporally_compatible(user_id, mid, strict=True):
+                continue
             if score >= min_score:
-                results.append((movie_id, score))
-        
-        # Sort by score descending
-        results.sort(key=lambda x: x[1], reverse=True)
-        
-        return results
-    
+                filtered.append((mid, score))
+                
+        return sorted(filtered, key=lambda x: x[1], reverse=True)
+
     def get_group_temporal_profile(self, group_user_ids: List[int]) -> Dict:
         """
-        Aggregate temporal profiles for a group of users.
-        
-        Returns:
-            Dict with aggregated group preferences
+        Aggregate temporal profiles for a group.
         """
-        profiles = [
-            self.get_user_temporal_profile(uid) 
-            for uid in group_user_ids
-        ]
+        profiles = [self.get_user_temporal_profile(uid) for uid in group_user_ids]
         
         if not profiles:
             return self._neutral_profile()
+            
+        # Average the means
+        means = [p['mean_release_year'] for p in profiles]
+        group_mean = np.mean(means)
         
-        # Aggregate statistics
-        avg_ages = [p['avg_movie_age'] for p in profiles]
-        recency_scores = [p['recency_score'] for p in profiles]
+        # Union of ranges
+        min_years = [p['year_range'][0] for p in profiles]
+        max_years = [p['year_range'][1] for p in profiles]
         
-        # Use most restrictive range (intersection)
-        min_years = [p['min_acceptable_year'] for p in profiles]
-        max_years = [p['max_acceptable_year'] for p in profiles]
-        
-        group_min_year = max(min_years)  # Most restrictive minimum
-        group_max_year = min(max_years)  # Most restrictive maximum
-        
-        # If ranges don't overlap, use average
-        if group_min_year > group_max_year:
-            group_min_year = int(np.mean(min_years))
-            group_max_year = int(np.mean(max_years))
-        
-        group_avg_age = np.mean(avg_ages)
-        group_recency = np.mean(recency_scores)
-        
-        # Determine group preference type
-        if group_recency > 0.7:
-            pref_type = 'recent'
-        elif group_recency < 0.3:
-            pref_type = 'classic'
-        else:
-            pref_type = 'mixed'
+        # Use a "middle ground" range
+        group_min = np.mean(min_years)
+        group_max = np.mean(max_years)
         
         return {
-            'avg_movie_age': float(group_avg_age),
-            'preference_type': pref_type,
-            'recency_score': float(group_recency),
-            'min_acceptable_year': group_min_year,
-            'max_acceptable_year': group_max_year,
-            'group_size': len(group_user_ids),
+            'mean_release_year': group_mean,
+            'year_range': (int(group_min), int(group_max)),
             'individual_profiles': profiles
         }
-    
+        
     def explain_temporal_mismatch(
         self, 
         user_id: int, 
         movie_id: int
     ) -> str:
         """
-        Generate a human-readable explanation for why a movie doesn't fit
-        the user's temporal preferences.
+        Generate explanation for temporal mismatch.
         """
         profile = self.get_user_temporal_profile(user_id)
+        movie_year_vals = self.movies[self.movies['movieId'] == movie_id]['year'].values
         
-        movie_year = self.movies[
-            self.movies['movieId'] == movie_id
-        ]['year'].values
+        if len(movie_year_vals) == 0:
+            return "Year unknown"
+            
+        year = int(movie_year_vals[0])
+        mean = int(profile['mean_release_year'])
         
-        if len(movie_year) == 0 or movie_year[0] == 0:
-            return "Movie year unknown"
+        diff = year - mean
         
-        movie_year = int(movie_year[0])
-        movie_age = self.current_year - movie_year
-        
-        if profile['preference_type'] == 'recent':
-            if movie_age > 10:
-                return (
-                    f"This movie from {movie_year} may be too old. "
-                    f"You typically watch movies from the last "
-                    f"{int(profile['avg_movie_age'])} years."
-                )
-        elif profile['preference_type'] == 'classic':
-            if movie_age < 5:
-                return (
-                    f"This movie from {movie_year} may be too recent. "
-                    f"You typically prefer older films "
-                    f"(average age: {int(profile['avg_movie_age'])} years)."
-                )
-        
-        return (
-            f"This movie from {movie_year} is outside your typical range "
-            f"({profile['min_acceptable_year']}-{profile['max_acceptable_year']})."
-        )
+        if diff < -15:
+            return f"From {year}, which is older than your typical preference (around {mean})."
+        elif diff > 15:
+            return f"From {year}, which is newer than your typical preference (around {mean})."
+        else:
+            return f"From {year}, slightly outside your core preference range."
