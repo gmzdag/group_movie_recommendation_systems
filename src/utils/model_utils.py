@@ -175,7 +175,10 @@ class ModelFactory:
         self.global_mean = self.cf_matrix.stack().mean()
     
     def _compute_similarities(self):
-        """Compute item and user similarities."""
+        """Compute item and user similarities with caching."""
+        from src.recommender.IBCF.neighbors_item import load_or_compute_item_neighbors
+        from src.recommender.UBCF.neighbors_user import load_or_compute_neighbors
+        
         # Item similarity (cosine on normalized matrix)
         item_sim_matrix = cosine_similarity(self.norm_matrix.fillna(0).T)
         self.item_sim_df = pd.DataFrame(
@@ -184,14 +187,19 @@ class ModelFactory:
             columns=self.norm_matrix.columns
         )
         
-        # Compute item neighbors
-        self.item_neighbors = compute_item_neighbors(self.item_sim_df, K=self.item_k)
+        # Compute item neighbors with caching
+        self.item_neighbors = load_or_compute_item_neighbors(
+            self.item_sim_df, 
+            K=self.item_k,
+            metric="cosine"
+        )
         
-        # Compute user neighbors
-        self.user_neighbors = precompute_all_user_neighbors(
+        # Compute user neighbors with caching
+        self.user_neighbors = load_or_compute_neighbors(
             self.cf_matrix, 
             pearson_shrink, 
-            K=self.user_k
+            K=self.user_k,
+            metric="pearson_shrink"
         )
     
     def create_ibcf(self, top_k: int = 20) -> ItemBasedCF:

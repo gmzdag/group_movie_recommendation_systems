@@ -18,18 +18,32 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 
 class ContentBasedModel:
-    def __init__(self, movies_df, ratings_df):
+    def __init__(self, movies_df, ratings_df, weights=None):
         """
         Initialize and fit the Content-Based Model.
         
         Args:
             movies_df: DataFrame containing metadata (movieId, genres, etc.)
             ratings_df: DataFrame containing user history (userId, movieId, rating)
+            weights: Dictionary of feature weights (default if None)
         """
         print(f"\n[DEBUG] Initializing ContentBasedModel (Signal Mode)...")
         
         self.movies_df = movies_df.copy()
         self.ratings_df = ratings_df.copy()
+
+        # Default Weights
+        self.weights = weights if weights else {
+            'genres': 2,
+            'director': 2,
+            'keywords': 2,
+            'actors': 1,
+            'year': 1,
+            'overview': 1,
+            'companies': 0, # Default to 0 (disabled) to match previous baseline unless specified
+            'countries': 0
+        }
+        print(f"[DEBUG] Using weights: {self.weights}")
         
         # 1. Prepare Data (Text Soup)
         print(f"[DEBUG] Constructing 'text soup' from metadata...")
@@ -58,59 +72,78 @@ class ContentBasedModel:
     def _create_soup(self, df):
         """
         Creates a single string 'soup' for each movie used for vectorization.
-        Refined Weighting Strategy:
-        - Genres (x2): Foundation of similarity
-        - Director (x2): Strongest single-token signal
-        - Keywords (x2): Specific plot elements
-        - Actors (x1): Top 3 actors
-        - Year (x1): Decade weighting
-        - Overview (x1): General Context
-        
-        Result: Overlap in multiple categories (e.g. Director + Keywords) yields much higher scores
+        Uses self.weights for token repetition.
         """
         def clean_token(x):
-            # "Christopher Nolan" -> "ChristopherNolan"
             if isinstance(x, str):
-                return x.replace(" ", "").lower() # Lowercase for consistency
+                return x.replace(" ", "").lower() 
             return ""
 
         soup = []
         for _, row in df.iterrows():
-            # 1. Genres (x2)
+            # 1. Genres
             genres = str(row.get('genres', '')).replace('|', ' ')
-            genres = (genres + " ") * 2
+            genres = (genres + " ") * self.weights.get('genres', 2)
             
-            # 2. Director (x2) - Very specific
+            # 2. Director
             director_val = str(row.get('Director', ''))
-            director = (clean_token(director_val) + " ") * 2
+            director = (clean_token(director_val) + " ") * self.weights.get('director', 2)
             
-            # 3. Actors (x1) - Top 3
+            # 3. Actors
             actors_raw = str(row.get('Actors', ''))
             if actors_raw and actors_raw.lower() != 'nan':
-                 # Split, clean each, join
                  act_list = [clean_token(a) for a in actors_raw.split(',')[:3]]
                  actors = " ".join(act_list)
             else:
                 actors = ""
+            actors = (actors + " ") * self.weights.get('actors', 1)
                 
-            # 4. Keywords (x2) - Specific plot points
+            # 4. Keywords
             kw_raw = str(row.get('Keywords', '')).replace('|', ' ')
-            keywords = (kw_raw + " ") * 2
+            keywords = (kw_raw + " ") * self.weights.get('keywords', 2)
             
+            # 5. Production Companies
+            companies_weight = self.weights.get('companies', 0)
+            companies = ""
+            if companies_weight > 0:
+                comp_raw = str(row.get('Production_Companies', ''))
+                # Clean: "Warner Bros. Pictures" -> "warnbros.pictures" helps uniqueness
+                # But simple lower+nospace is fine: "warnerbros.pictures"
+                if comp_raw and comp_raw.lower() != 'nan':
+                    # Take top 2 companies
+                    c_list = [clean_token(c) for c in comp_raw.split(',')[:2]]
+                    companies = " ".join(c_list)
+                    companies = (companies + " ") * companies_weight
 
-            # 5. Year (x1) - Decade weighting
-            year = row.get('year', 0)
+            # 6. Production Countries
+            countries_weight = self.weights.get('countries', 0)
+            countries = ""
+            if countries_weight > 0:
+                count_raw = str(row.get('Production_Countries', ''))
+                if count_raw and count_raw.lower() != 'nan':
+                    # Take all
+                    ct_list = [clean_token(c) for c in count_raw.split(',')]
+                    countries = " ".join(ct_list)
+                    countries = (countries + " ") * countries_weight
+
+            # 7. Year
+            year_reps = self.weights.get('year', 1)
             year_str = ""
-            if year > 0:
-                year_token = str(int(year))
-                decade_token = "Decade" + str(int(year) // 10 * 10)
-                year_str = f"{year_token} {decade_token} " 
+            if year_reps > 0:
+                year = row.get('year', 0)
+                if year > 0:
+                    year_token = str(int(year))
+                    decade_token = "Decade" + str(int(year) // 10 * 10)
+                    year_str = f"{year_token} {decade_token} " 
+                    year_str = year_str * year_reps
             
-            # 6. Overview (x1)
+            # 8. Overview
+            overview_reps = self.weights.get('overview', 1)
             overview = str(row.get('Overview', ''))
+            overview = (overview + " ") * overview_reps
             
             # Combined String
-            combined = f"{genres} {director} {actors} {keywords} {year_str} {overview}"
+            combined = f"{genres} {director} {actors} {keywords} {companies} {countries} {year_str} {overview}"
             soup.append(combined)
             
         return soup

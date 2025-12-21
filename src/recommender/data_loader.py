@@ -169,3 +169,34 @@ def load_all_data():
     R_dense = build_dense_matrix(ratings) # CB + group ops
 
     return movies, ratings, watchlists, R_cf, R_dense
+
+
+# ------------------------------------------------------
+# Load Splits as Matrices (Training Focus)
+# ------------------------------------------------------
+def load_split_data():
+    """
+    Loads Training Data exclusively and builds matrices from it.
+    Used for ensuring models are trained ONLY on past data (Train Split).
+    
+    Returns:
+        movies: DataFrame (Metadata)
+        train_df: DataFrame (Raw Ratings - Train)
+        valid_df: DataFrame (Raw Ratings - Validation)
+        test_df:  DataFrame (Raw Ratings - Test)
+        watchlists: DataFrame
+        R_train_cf: Pearson-ready Matrix (NaNs) from Training Data
+        R_train_dense: Dense Matrix (Zeros) from Training Data
+    """
+    # Load raw splits
+    train_df, valid_df, test_df = load_train_valid_test_splits()
+    
+    movies = load_movies()
+    watchlists = load_watchlists()
+    
+    # Build Matrices from TRAIN only
+    R_train_cf = build_cf_matrix(train_df)
+    R_train_dense = build_dense_matrix(train_df)
+    
+    return movies, train_df, valid_df, test_df, watchlists, R_train_cf, R_train_dense
+

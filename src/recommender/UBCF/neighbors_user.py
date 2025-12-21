@@ -79,16 +79,47 @@ def load_neighbors(path):
         return pickle.load(f)
 
 
-def load_or_compute_neighbors(cache_path, R, sim_fn, K=25):
-    if os.path.exists(cache_path):
-        print(f"[CACHE] Loaded neighbor cache from: {cache_path}")
-        return load_neighbors(cache_path)
-
-    print("[CACHE] No cache found. Computing neighbors...")
-    neigh = precompute_all_user_neighbors(R, sim_fn, K)
-    save_neighbors(cache_path, neigh)
-    print("[CACHE] Saved.")
-    return neigh
+def load_or_compute_neighbors(R, sim_fn, K=25, metric="pearson"):
+    """
+    Load from centralized cache OR compute and save.
+    Uses hash-based cache keys to detect data changes.
+    
+    Args:
+        R: User-item rating matrix (DataFrame)
+        sim_fn: Similarity function
+        K: Number of neighbors
+        metric: Similarity metric name (for cache key)
+    
+    Returns:
+        Dictionary of {user_id: {neighbor_id: similarity, ...}}
+    """
+    from src.utils.cache_manager import CacheManager
+    
+    cache = CacheManager()
+    
+    # Simple, fixed cache key (no hash - assumes same data each time)
+    cache_key = f"user_neighbors_k{K}_{metric}"
+    
+    print(f"\n{'='*60}")
+    print(f"[CACHE] User Neighbors - K={K}, metric={metric}")
+    print(f"[CACHE] Cache key: {cache_key}")
+    print(f"{'='*60}")
+    
+    # Try to load from cache
+    neighbors = cache.load(cache_key)
+    
+    if neighbors is not None:
+        print(f"[CACHE HIT] Loaded {len(neighbors)} users from cache")
+        return neighbors
+    
+    # Cache miss - compute
+    print("[CACHE MISS] Computing user neighbors from scratch...")
+    neighbors = precompute_all_user_neighbors(R, sim_fn, K)
+    
+    # Save to cache
+    cache.save(cache_key, neighbors)
+    
+    return neighbors
 
 
 def update_neighbors_for_new_user(cache_path, neighbors, R, sim_fn, new_uid, K=25):

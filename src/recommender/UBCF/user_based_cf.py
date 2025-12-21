@@ -53,26 +53,25 @@ class UserBasedCF:
         valid_ratings = neighbor_ratings[mask]
         valid_nids = np.array(neighbor_ids)[mask]
 
-        # 5. Calculate baseline for neighbors
-        # baselines_v = u_means_v + i_mean - self.global_mean
+        # 5. Calculate prediction using Mean-Centered Approach (Standard Resnick)
+        # This aligns better with Pearson correlation which measures linear correlation of deviations.
+        # Formula: pred = mean_u + sum(sim_v * (r_v - mean_v)) / sum(|sim_v|)
+        
         u_means_v = self.user_means.loc[valid_nids].values
-        i_mean = self.item_means[movie_id]
         
-        baselines_v = u_means_v + i_mean - self.global_mean
-
-        # 6. Prediction
-        # pred = baseline_u + sum(sim * (r - baseline_v)) / sum(|sim|)
+        # Deviation of neighbor ratings from their own means
+        deviations_v = valid_ratings - u_means_v
         
-        num = np.sum(valid_sims * (valid_ratings - baselines_v))
+        num = np.sum(valid_sims * deviations_v)
         den = np.sum(np.abs(valid_sims))
         
-        # Calculate target user baseline
-        target_baseline = self.user_means.get(user_id, self.global_mean) + i_mean - self.global_mean
+        # Target user mean
+        target_mean = self.user_means.get(user_id, self.global_mean)
 
         if den == 0:
-            return target_baseline
+            return target_mean
         
-        return target_baseline + num / den
+        return target_mean + (num / den)
 
     def recommend(self, user_id, top_n=10):
         """

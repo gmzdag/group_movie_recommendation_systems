@@ -21,13 +21,19 @@ import json
 class CacheManager:
     """Generic caching layer for expensive computations."""
     
-    def __init__(self, cache_dir='cache'):
+    def __init__(self, cache_dir=None):
         """
         Initialize cache manager.
         
         Args:
-            cache_dir: Directory to store cache files
+            cache_dir: Directory to store cache files.
+                      If None, uses project_root/cache/
         """
+        if cache_dir is None:
+            # Get project root (2 levels up from this file: utils/ -> src/ -> project_root/)
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            cache_dir = os.path.join(project_root, "cache")
+        
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         

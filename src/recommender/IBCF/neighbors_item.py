@@ -99,22 +99,44 @@ def load_neighbors(path: str) -> dict:
     return neighbors
 
 
-def load_or_compute_item_neighbors(cache_path: str, item_sim: pd.DataFrame, K: int = 60):
+def load_or_compute_item_neighbors(item_sim: pd.DataFrame, K: int = 60, metric: str = "cosine"):
     """
-    Load from cache OR compute and save.
+    Load from centralized cache OR compute and save.
+    Uses hash-based cache keys to detect data changes.
+    
+    Args:
+        item_sim: Item similarity matrix
+        K: Number of neighbors
+        metric: Similarity metric used (for cache key)
+    
+    Returns:
+        Dictionary of {movie_id: {neighbor_id: similarity, ...}}
     """
+    from src.utils.cache_manager import CacheManager
+    
+    cache = CacheManager()
+    
+    # Simple, fixed cache key (no hash - assumes same data each time)
+    # If you change the training data, manually clear cache
+    cache_key = f"item_neighbors_k{K}_{metric}"
+    
     print(f"\n{'='*60}")
-    print(f"[CACHE] Checking for cached neighbors at: {cache_path}")
+    print(f"[CACHE] Item Neighbors - K={K}, metric={metric}")
+    print(f"[CACHE] Cache key: {cache_key}")
     print(f"{'='*60}")
     
-    if os.path.exists(cache_path):
-        print(f"[CACHE HIT] Loading from cache...")
-        neighbors = load_neighbors(cache_path)
-        print(f"[CACHE] Sample neighbor count: {len(list(neighbors.values())[0])} for first movie")
+    # Try to load from cache
+    neighbors = cache.load(cache_key)
+    
+    if neighbors is not None:
+        print(f"[CACHE HIT] Loaded {len(neighbors)} movies from cache")
         return neighbors
     
+    # Cache miss - compute
     print(f"[CACHE MISS] Computing item neighbors from scratch...")
-    neigh = compute_item_neighbors(item_sim, K)
-    save_neighbors(cache_path, neigh)
+    neighbors = compute_item_neighbors(item_sim, K)
     
-    return neigh
+    # Save to cache
+    cache.save(cache_key, neighbors)
+    
+    return neighbors
