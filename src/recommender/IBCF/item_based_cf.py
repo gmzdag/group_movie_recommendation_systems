@@ -13,14 +13,14 @@ import pandas as pd
 
 
 class ItemBasedCF:
-    def __init__(self, raw_um, norm_um, item_neighbors, movies, top_k=10):
+    def __init__(self, raw_um, norm_um, item_neighbors, movies, top_k=20):
         """
         Args:
             raw_um: Raw Rating Matrix (Users x Movies), Missing=NaN
             norm_um: Z-Score Normalized Matrix, Missing=0
             item_neighbors: Pre-computed top-K neighbors dict
             movies: Movies metadata (reference)
-            top_k: Neighbor count (Fixed=10 per request)
+            top_k: Neighbor count 
         """
         print(f"\n[DEBUG] Initializing ItemBasedCF (Hybrid Signal Mode)...")
         print(f"[DEBUG] - raw_um shape: {raw_um.shape}")

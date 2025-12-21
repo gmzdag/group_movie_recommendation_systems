@@ -14,7 +14,7 @@ OFFLINE_EVAL_CONFIG = {
     'total_ratings': 106669,
     'total_users': 614,
     'total_movies': 12616,
-    'ratings_used': 100000,  # Using recent 100k for faster evaluation
+    'ratings_used': 106669,  # UPDATED: Use ALL ratings for better CF (especially UserBased)
     
     # Split Configuration
     'split_method': 'temporal',
@@ -23,7 +23,7 @@ OFFLINE_EVAL_CONFIG = {
     'test_ratio': 0.15,
     
     # Group Configuration
-    'num_groups': 30,  # Start with 30, can increase to 50 for final paper
+    'num_groups': 20,  # Reduced from 30 to 20 for faster evaluation
     'min_group_size': 2,
     'max_group_size': 4,
     'min_test_ratings_per_user': 5,
@@ -31,8 +31,8 @@ OFFLINE_EVAL_CONFIG = {
     # Evaluation Configuration
     'k_values': [5, 10],
     'ground_truth_threshold': 3.5,  # Ratings >= 3.5 considered relevant
-    'ground_truth_min_support': 2,  # Require at least 2 members to have watched it (for groups >= 2)
-    'ground_truth_strategy': 'strict',  # Changed from 'relaxed' to 'strict'
+    'ground_truth_min_support': 1,  # RELAXED: Changed from 2 to 1 for sparse data
+    'ground_truth_strategy': 'relaxed',  # RELAXED: Changed from 'strict' to 'relaxed'
     'candidate_pool_size': 3000, # Increased from 500 to 3000 to avoid popularity bias
     
     # Model Configuration

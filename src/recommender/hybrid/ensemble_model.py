@@ -37,19 +37,8 @@ class EnsembleRecommender:
         all_results = {} # mid -> {model_idx: score, 'explanations': ...}
         
         for i, model in enumerate(self.models):
-            # Check if model has a 'ubcf' or 'R' attribute to filter watched
-            # Or filter globally before calling.
-            # Usually filtering is handled by the caller or inside recommend_for_group.
-            # But ensure consistency.
             pass
             
-        # Global Filtering: Remove if ANY user in group has seen it
-        # This requires access to history. The models might not all have it easy.
-        # But `HybridModel2` logic had a filter.
-        # Let's rely on `recommend` caller passing valid candidates.
-        # However, to be safe, if we have access to history, we should filter.
-        # Current design: `predict_online.py` generates candidates. We should filter THERE.
-        
         for i, model in enumerate(self.models):
              # Pass explicit candidates list
             recs = model.recommend_for_group(group_users, candidates, top_k=len(candidates))
