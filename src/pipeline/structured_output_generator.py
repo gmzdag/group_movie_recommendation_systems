@@ -30,7 +30,7 @@ class StructuredOutputGenerator:
     
     def __init__(self, hybrid_model_1, hybrid_model_2, hybrid_model_3, 
                  movies_df, watchlist_df, cf_matrix, ratings_df=None,
-                 enable_temporal_filtering=True):
+                 enable_temporal_filtering=True, use_multi_model_selection=True):
         """
         Args:
             hybrid_model_1: HybridModel1 instance (Dynamic Weighted Hybrid)
@@ -41,6 +41,7 @@ class StructuredOutputGenerator:
             cf_matrix: Collaborative filtering matrix (user-item ratings)
             ratings_df: DataFrame with ratings (userId, movieId, rating, timestamp)
             enable_temporal_filtering: If True, apply temporal preference filtering
+            use_multi_model_selection: If True, use multi-model selection for Section A
         """
         self.h1 = hybrid_model_1
         self.h2 = hybrid_model_2
@@ -49,12 +50,16 @@ class StructuredOutputGenerator:
         self.watchlist_df = watchlist_df
         self.cf_matrix = cf_matrix
         self.enable_temporal_filtering = enable_temporal_filtering
+        self.use_multi_model_selection = use_multi_model_selection
         
         # Initialize temporal analyzer if ratings data is provided
         if ratings_df is not None and enable_temporal_filtering:
             self.temporal_analyzer = TemporalPreferenceAnalyzer(ratings_df, movies_df)
         else:
             self.temporal_analyzer = None
+        
+        # Load model performance for multi-model selection
+        self.model_performance = self._load_model_performance() if use_multi_model_selection else None
         
     def generate_three_section_output(self, group_users: List[int]) -> Dict[str, Any]:
         """
@@ -73,10 +78,15 @@ class StructuredOutputGenerator:
         # Get direct watchlist matches (for exclusion from Section A)
         direct_watchlist_set = self._get_direct_watchlist_set(group_users)
         
-        # Generate Section A
-        section_a = self._generate_section_a(
-            group_users, watched_set, direct_watchlist_set
-        )
+        # Generate Section A (multi-model or single model)
+        if self.use_multi_model_selection and self.model_performance:
+            section_a = self._generate_section_a_multi_model(
+                group_users, watched_set, direct_watchlist_set
+            )
+        else:
+            section_a = self._generate_section_a(
+                group_users, watched_set, direct_watchlist_set
+            )
         
         # Generate Section B
         section_b = self._generate_section_b(
@@ -97,6 +107,190 @@ class StructuredOutputGenerator:
     # ========================================================================
     # SECTION A: TOP-10 RANKED GROUP RECOMMENDATIONS
     # ========================================================================
+    
+    def _load_model_performance(self) -> Optional[Dict[str, Dict]]:
+        """Load model performance metrics from cache."""
+        import json
+        import os
+        
+        cache_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "data", "cache", "model_performance.json"
+        )
+        
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, 'r') as f:
+                    performance = json.load(f)
+                print(f"[INFO] Loaded model performance: "
+                      f"H1=#{performance['h1']['rank']}, "
+                      f"H2=#{performance['h2']['rank']}, "
+                      f"H3=#{performance['h3']['rank']}")
+                return performance
+            except Exception as e:
+                print(f"[WARNING] Could not load model performance: {e}")
+                return None
+        else:
+            print(f"[WARNING] Model performance file not found at {cache_path}")
+            print("[INFO] Run 'python src/calibration/train_production.py' to generate it.")
+            return None
+    
+    def _calculate_quota_allocation(self, total_slots: int = 10) -> Dict[str, int]:
+        """
+        Calculate slot allocation for each model based on performance ranking.
+        
+        Strategy: Performance-proportional allocation
+        - Rank 1 gets most slots
+        - Rank 2 gets moderate slots  
+        - Rank 3 gets fewest slots
+        
+        Example: For 10 slots with ranks [1,2,3] -> [5, 3, 2]
+        """
+        if not self.model_performance:
+            # Fallback: equal distribution
+            return {'h1': 4, 'h2': 3, 'h3': 3}
+        
+        # Get NDCG scores
+        scores = {
+            'h1': self.model_performance['h1'].get('ndcg@10', 0.0),
+            'h2': self.model_performance['h2'].get('ndcg@10', 0.0),
+            'h3': self.model_performance['h3'].get('ndcg@10', 0.0)
+        }
+        
+        total_score = sum(scores.values())
+        
+        if total_score < 0.01:
+            # All models failed, use equal distribution
+            return {'h1': 4, 'h2': 3, 'h3': 3}
+        
+        # Proportional allocation
+        allocation = {}
+        for model, score in scores.items():
+            allocation[model] = max(1, int(round((score / total_score) * total_slots)))
+        
+        # Adjust to exactly total_slots
+        current_total = sum(allocation.values())
+        if current_total != total_slots:
+            # Give extra slots to best model or remove from worst
+            best_model = max(scores.items(), key=lambda x: x[1])[0]
+            allocation[best_model] += (total_slots - current_total)
+        
+        return allocation
+    
+    def _generate_section_a_multi_model(
+        self,
+        group_users: List[int],
+        watched_set: Set[int],
+        direct_watchlist_set: Set[int]
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate Top-10 using multi-model selection strategy.
+        
+        Each film comes from a single model based on performance ranking.
+        Models do NOT merge scores - each recommendation has a source model.
+        
+        STRICT RULES:
+        - Watchlist direct matches EXCLUDED
+        - Each film attributed to source model
+        - Quota-based selection (performance-proportional)
+        """
+        print("\n[SECTION A] Using MULTI-MODEL selection strategy")
+        
+        # Calculate quota allocation
+        quota = self._calculate_quota_allocation(total_slots=10)
+        print(f"[QUOTA] H1={quota['h1']}, H2={quota['h2']}, H3={quota['h3']}")
+        
+        # Generate candidates from each model
+        model_candidates = {}
+        
+        for model_key in ['h1', 'h2', 'h3']:
+            model = getattr(self, model_key)
+            
+            # Get candidates (same logic as original)
+            candidates = self._get_candidates_for_section_a(
+                group_users, watched_set, direct_watchlist_set
+            )
+            
+            if not candidates:
+                model_candidates[model_key] = []
+                continue
+            
+            # Request more than quota to allow filtering
+            request_k = quota[model_key] * 3
+            
+            try:
+                recs = model.recommend_for_group(
+                    group_users, candidates, top_k=request_k
+                )
+                
+                # Filter out direct watchlist matches
+                filtered_recs = []
+                for rec in recs:
+                    if rec['movie_id'] not in direct_watchlist_set:
+                        # Add source model attribution
+                        rec['source_model'] = model_key.upper()
+                        filtered_recs.append(rec)
+                
+                model_candidates[model_key] = filtered_recs
+                print(f"[{model_key.upper()}] Generated {len(filtered_recs)} candidates")
+                
+            except Exception as e:
+                print(f"[WARNING] {model_key.upper()} failed: {e}")
+                model_candidates[model_key] = []
+        
+        # Select top films from each model according to quota
+        final_recommendations = []
+        used_movie_ids = set()
+        
+        for model_key in ['h1', 'h2', 'h3']:
+            quota_for_model = quota[model_key]
+            candidates = model_candidates[model_key]
+            
+            selected_count = 0
+            for rec in candidates:
+                if selected_count >= quota_for_model:
+                    break
+                
+                # Skip if already selected by another model
+                if rec['movie_id'] in used_movie_ids:
+                    continue
+                
+                # Add to final list
+                final_recommendations.append(rec)
+                used_movie_ids.add(rec['movie_id'])
+                selected_count += 1
+        
+        # Sort by score (descending)
+        final_recommendations.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Format output
+        section_a_output = []
+        for rec in final_recommendations[:10]:
+            movie_id = rec['movie_id']
+            title = self._get_movie_title(movie_id)
+            
+            # Filter explanations (no direct watchlist)
+            user_explanations = {}
+            for uid, expl in rec['explanations'].items():
+                if not self._is_direct_watchlist_explanation(expl):
+                    user_explanations[uid] = expl
+            
+            if not user_explanations:
+                continue
+            
+            section_a_output.append({
+                'movie_id': movie_id,
+                'title': title,
+                'group_score': round(rec['score'], 2),
+                'source_model': rec['source_model'],
+                'model_score': round(rec['score'], 2),
+                'group_explanation': rec['group_explanation'],
+                'signal_source': self._get_dominant_signal_source(user_explanations),
+                'user_explanations': user_explanations
+            })
+        
+        print(f"[SECTION A] Final: {len(section_a_output)} recommendations")
+        return section_a_output[:10]
     
     def _generate_section_a(self, group_users: List[int], 
                            watched_set: Set[int],
@@ -355,55 +549,464 @@ class StructuredOutputGenerator:
                            section_a: List[Dict[str, Any]],
                            section_b: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Generate shared interest themes section.
+        Generate shared interest themes section with ENHANCED diversity.
+        
+        NEW APPROACH:
+        - Detect themes from 6 types: Director, Actor, Keyword, Country, Genre, Year
+        - Minimum 5 themes, maximum 8 themes
+        - Each theme must cite specific users
+        - Avoid generalizations
         
         STRICT RULES:
-        - Explanation-first approach
-        - Derive interests from EXISTING explanations
-        - DO NOT infer from raw metadata
-        - DO NOT use high-level genres
-        - Valid types: Directors, Keywords, Themes, Actors
+        - Derive interests from Section A movies (not raw metadata)
+        - DO NOT use high-level genres alone
+        - Each theme must have user attribution
         """
-        # 1. Extract features from Section A explanations
-        all_features = self._extract_features_from_explanations(section_a)
-        
-        # 2. Count and normalize features
-        feature_counts = Counter(all_features)
-        
-        # 3. Select top 3-4 features that meet consensus criteria
-        consensus_threshold = max(2, len(group_users) // 2)
-        
-        selected_features = [
-            (feature, count) for feature, count in feature_counts.most_common()
-            if count >= consensus_threshold
-        ][:4]  # Max 4 themes
-        
-        if not selected_features:
-            # Fallback: no strong consensus
-            return []
-        
-        # 4. For each selected feature, generate thematic block
-        section_c_output = []
-        
         # Collect already recommended movie IDs
         excluded_ids = watched_set.copy()
-        excluded_ids.update({rec['movie_id'] for rec in section_a})
+        section_a_movie_ids = {rec['movie_id'] for rec in section_a}
+        excluded_ids.update(section_a_movie_ids)
         excluded_ids.update({rec['movie_id'] for rec in section_b})
         
-        for feature, count in selected_features:
-            theme_block = self._generate_theme_block(
-                feature, count, len(group_users), 
-                group_users, excluded_ids
+        # Extract themes from Section A movies using 6 detection methods
+        themes = self._detect_diverse_themes(section_a, group_users)
+        
+        # Select top themes (minimum 5, maximum 8)
+        selected_themes = self._select_top_themes(themes, min_themes=5, max_themes=8)
+        
+        if not selected_themes:
+            print("[SECTION C] No themes detected")
+            return []
+        
+        print(f"[SECTION C] Selected {len(selected_themes)} diverse themes")
+        
+        # Generate theme blocks
+        section_c_output = []
+        
+        for theme in selected_themes:
+            theme_block = self._generate_theme_block_enhanced(
+                theme, group_users, excluded_ids
             )
             
             if theme_block:
                 section_c_output.append(theme_block)
-                # Update excluded IDs to prevent duplicates across themes
+                # Update excluded IDs to prevent duplicates
                 excluded_ids.update({
                     m['movie_id'] for m in theme_block['recommended_movies']
                 })
         
         return section_c_output
+    
+    def _detect_diverse_themes(self, section_a: List[Dict[str, Any]], 
+                               group_users: List[int]) -> List[Dict[str, Any]]:
+        """
+        Detect themes from Section A movies using 6 different methods.
+        
+        Returns list of themes with:
+        - theme_type: 'director', 'actor', 'keyword', 'country', 'genre', 'year'
+        - theme_value: The actual value (e.g., 'Christopher Nolan')
+        - user_movies: Dict mapping user_id to list of movie_ids supporting this theme
+        - score: Number of users who have this theme
+        """
+        themes = []
+        
+        # Get Section A movie IDs
+        section_a_movie_ids = [rec['movie_id'] for rec in section_a]
+        section_a_movies = self.movies_df[self.movies_df['movieId'].isin(section_a_movie_ids)]
+        
+        # Build user-to-movies mapping from Section A
+        user_to_movies = {}
+        for rec in section_a:
+            for uid in rec.get('user_explanations', {}).keys():
+                if uid not in user_to_movies:
+                    user_to_movies[uid] = []
+                user_to_movies[uid].append(rec['movie_id'])
+        
+        # 1. DIRECTOR themes
+        themes.extend(self._detect_director_themes(section_a_movies, user_to_movies))
+        
+        # 2. ACTOR themes
+        themes.extend(self._detect_actor_themes(section_a_movies, user_to_movies))
+        
+        # 3. KEYWORD themes
+        themes.extend(self._detect_keyword_themes(section_a_movies, user_to_movies))
+        
+        # 4. COUNTRY themes
+        themes.extend(self._detect_country_themes(section_a_movies, user_to_movies))
+        
+        # 5. GENRE themes (specific, not high-level)
+        themes.extend(self._detect_genre_themes(section_a_movies, user_to_movies))
+        
+        # 6. YEAR/ERA themes
+        themes.extend(self._detect_year_themes(section_a_movies, user_to_movies))
+        
+        return themes
+    
+    def _detect_director_themes(self, movies_df, user_to_movies) -> List[Dict]:
+        """Detect director themes from Section A movies"""
+        themes = []
+        
+        if 'Director' not in movies_df.columns:
+            return themes
+        
+        # Extract all directors
+        director_to_movies = {}
+        for _, row in movies_df.iterrows():
+            if pd.notna(row.get('Director')):
+                directors = [d.strip() for d in str(row['Director']).split(',')]
+                for director in directors:
+                    if director not in director_to_movies:
+                        director_to_movies[director] = []
+                    director_to_movies[director].append(row['movieId'])
+        
+        # Build themes
+        for director, movie_ids in director_to_movies.items():
+            if len(movie_ids) >= 2:  # At least 2 movies
+                user_movies = {}
+                for uid, umovies in user_to_movies.items():
+                    common = set(umovies) & set(movie_ids)
+                    if common:
+                        user_movies[uid] = list(common)
+                
+                if len(user_movies) >= 2:  # At least 2 users
+                    themes.append({
+                        'theme_type': 'director',
+                        'theme_value': director,
+                        'user_movies': user_movies,
+                        'score': len(user_movies)
+                    })
+        
+        return themes
+    
+    def _detect_actor_themes(self, movies_df, user_to_movies) -> List[Dict]:
+        """Detect actor themes from Section A movies"""
+        themes = []
+        
+        if 'Actors' not in movies_df.columns:
+            return themes
+        
+        # Extract all actors
+        actor_to_movies = {}
+        for _, row in movies_df.iterrows():
+            if pd.notna(row.get('Actors')):
+                actors = [a.strip() for a in str(row['Actors']).split(',')]
+                for actor in actors[:3]:  # Top 3 actors only
+                    if actor not in actor_to_movies:
+                        actor_to_movies[actor] = []
+                    actor_to_movies[actor].append(row['movieId'])
+        
+        # Build themes (only actors with 2+ movies)
+        for actor, movie_ids in actor_to_movies.items():
+            if len(movie_ids) >= 2:
+                user_movies = {}
+                for uid, umovies in user_to_movies.items():
+                    common = set(umovies) & set(movie_ids)
+                    if common:
+                        user_movies[uid] = list(common)
+                
+                if len(user_movies) >= 2:
+                    themes.append({
+                        'theme_type': 'actor',
+                        'theme_value': actor,
+                        'user_movies': user_movies,
+                        'score': len(user_movies)
+                    })
+        
+        return themes
+    
+    def _detect_keyword_themes(self, movies_df, user_to_movies) -> List[Dict]:
+        """Detect keyword themes from Section A movies"""
+        themes = []
+        
+        if 'Keywords' not in movies_df.columns:
+            return themes
+        
+        # Extract all keywords
+        keyword_to_movies = {}
+        for _, row in movies_df.iterrows():
+            if pd.notna(row.get('Keywords')):
+                keywords = [k.strip() for k in str(row['Keywords']).split(',')]
+                for keyword in keywords:
+                    if keyword not in keyword_to_movies:
+                        keyword_to_movies[keyword] = []
+                    keyword_to_movies[keyword].append(row['movieId'])
+        
+        # Build themes (only keywords with 2+ movies)
+        for keyword, movie_ids in keyword_to_movies.items():
+            if len(movie_ids) >= 2:
+                user_movies = {}
+                for uid, umovies in user_to_movies.items():
+                    common = set(umovies) & set(movie_ids)
+                    if common:
+                        user_movies[uid] = list(common)
+                
+                if len(user_movies) >= 2:
+                    themes.append({
+                        'theme_type': 'keyword',
+                        'theme_value': keyword,
+                        'user_movies': user_movies,
+                        'score': len(user_movies)
+                    })
+        
+        return themes
+    
+    def _detect_country_themes(self, movies_df, user_to_movies) -> List[Dict]:
+        """Detect country/region themes from Section A movies"""
+        themes = []
+        
+        if 'Production_Countries' not in movies_df.columns:
+            return themes
+        
+        # Extract all countries
+        country_to_movies = {}
+        for _, row in movies_df.iterrows():
+            if pd.notna(row.get('Production_Countries')):
+                countries = [c.strip() for c in str(row['Production_Countries']).split(',')]
+                for country in countries:
+                    if country not in country_to_movies:
+                        country_to_movies[country] = []
+                    country_to_movies[country].append(row['movieId'])
+        
+        # Build themes (only countries with 2+ movies, exclude USA if too common)
+        for country, movie_ids in country_to_movies.items():
+            if len(movie_ids) >= 2 and country != 'United States of America':
+                user_movies = {}
+                for uid, umovies in user_to_movies.items():
+                    common = set(umovies) & set(movie_ids)
+                    if common:
+                        user_movies[uid] = list(common)
+                
+                if len(user_movies) >= 2:
+                    themes.append({
+                        'theme_type': 'country',
+                        'theme_value': country,
+                        'user_movies': user_movies,
+                        'score': len(user_movies)
+                    })
+        
+        return themes
+    
+    def _detect_genre_themes(self, movies_df, user_to_movies) -> List[Dict]:
+        """Detect specific genre combinations (not high-level)"""
+        themes = []
+        
+        if 'genres' not in movies_df.columns:
+            return themes
+        
+        # Extract genre combinations
+        genre_to_movies = {}
+        for _, row in movies_df.iterrows():
+            if pd.notna(row.get('genres')):
+                genres = str(row['genres'])
+                # Only use specific combinations, not single genres
+                if '|' in genres:  # Multi-genre
+                    if genres not in genre_to_movies:
+                        genre_to_movies[genres] = []
+                    genre_to_movies[genres].append(row['movieId'])
+        
+        # Build themes
+        for genre_combo, movie_ids in genre_to_movies.items():
+            if len(movie_ids) >= 2:
+                user_movies = {}
+                for uid, umovies in user_to_movies.items():
+                    common = set(umovies) & set(movie_ids)
+                    if common:
+                        user_movies[uid] = list(common)
+                
+                if len(user_movies) >= 2:
+                    themes.append({
+                        'theme_type': 'genre',
+                        'theme_value': genre_combo.replace('|', ' + '),
+                        'user_movies': user_movies,
+                        'score': len(user_movies)
+                    })
+        
+        return themes
+    
+    def _detect_year_themes(self, movies_df, user_to_movies) -> List[Dict]:
+        """Detect year/era themes from Section A movies"""
+        themes = []
+        
+        if 'title' not in movies_df.columns:
+            return themes
+        
+        # Extract years from titles
+        import re
+        era_to_movies = {}
+        
+        for _, row in movies_df.iterrows():
+            title = str(row.get('title', ''))
+            year_match = re.search(r'\((\d{4})\)', title)
+            if year_match:
+                year = int(year_match.group(1))
+                # Group into decades
+                decade = (year // 10) * 10
+                era = f"{decade}s"
+                
+                if era not in era_to_movies:
+                    era_to_movies[era] = []
+                era_to_movies[era].append(row['movieId'])
+        
+        # Build themes
+        for era, movie_ids in era_to_movies.items():
+            if len(movie_ids) >= 2:
+                user_movies = {}
+                for uid, umovies in user_to_movies.items():
+                    common = set(umovies) & set(movie_ids)
+                    if common:
+                        user_movies[uid] = list(common)
+                
+                if len(user_movies) >= 2:
+                    themes.append({
+                        'theme_type': 'year',
+                        'theme_value': era,
+                        'user_movies': user_movies,
+                        'score': len(user_movies)
+                    })
+        
+        return themes
+    
+    def _select_top_themes(self, themes: List[Dict], min_themes: int = 5, 
+                          max_themes: int = 8) -> List[Dict]:
+        """
+        Select top themes ensuring diversity across theme types.
+        
+        Strategy:
+        - Prioritize themes with highest user support
+        - Ensure at least one theme from each type if possible
+        - Limit to max_themes total
+        """
+        if not themes:
+            return []
+        
+        # Sort by score (descending)
+        themes.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Ensure diversity: pick at least one from each type
+        selected = []
+        used_types = set()
+        
+        # First pass: one from each type
+        for theme in themes:
+            if theme['theme_type'] not in used_types:
+                selected.append(theme)
+                used_types.add(theme['theme_type'])
+                if len(selected) >= max_themes:
+                    break
+        
+        # Second pass: fill remaining slots with highest scores
+        if len(selected) < min_themes:
+            for theme in themes:
+                if theme not in selected:
+                    selected.append(theme)
+                    if len(selected) >= max_themes:
+                        break
+        
+        print(f"[THEMES] Selected {len(selected)} themes: {[t['theme_type'] for t in selected]}")
+        return selected[:max_themes]
+    
+    def _generate_theme_block_enhanced(self, theme: Dict, group_users: List[int],
+                                      excluded_ids: Set[int]) -> Dict[str, Any]:
+        """
+        Generate enhanced theme block with proper user attribution.
+        
+        Args:
+            theme: Dict with theme_type, theme_value, user_movies, score
+            group_users: List of user IDs
+            excluded_ids: Set of movie IDs to exclude
+        """
+        theme_type = theme['theme_type']
+        theme_value = theme['theme_value']
+        user_movies = theme['user_movies']
+        
+        # Format theme name
+        if theme_type == 'director':
+            theme_name = f"Films by {theme_value}"
+        elif theme_type == 'actor':
+            theme_name = f"Featuring {theme_value}"
+        elif theme_type == 'keyword':
+            theme_name = f"Exploring {theme_value.title()}"
+        elif theme_type == 'country':
+            theme_name = f"Cinema from {theme_value}"
+        elif theme_type == 'genre':
+            theme_name = f"{theme_value} Films"
+        elif theme_type == 'year':
+            theme_name = f"Classics from the {theme_value}"
+        else:
+            theme_name = theme_value
+        
+        # Find matching movies (not in excluded set)
+        matching_movies = self._find_movies_for_theme(theme, excluded_ids)
+        
+        if not matching_movies:
+            return None
+        
+        # Generate justification citing specific users
+        user_ids = list(user_movies.keys())
+        if len(user_ids) == 1:
+            justification = f"User {user_ids[0]} enjoyed this theme"
+        elif len(user_ids) == 2:
+            justification = f"Users {user_ids[0]} and {user_ids[1]} both appreciated this theme"
+        else:
+            justification = f"Users {', '.join(map(str, user_ids[:2]))} and {len(user_ids)-2} others enjoyed this theme"
+        
+        return {
+            'theme_name': theme_name,
+            'theme_type': theme_type,
+            'justification': justification,
+            'user_count': len(user_ids),
+            'recommended_movies': matching_movies[:3]  # Top 3 per theme
+        }
+    
+    def _find_movies_for_theme(self, theme: Dict, excluded_ids: Set[int]) -> List[Dict]:
+        """Find movies matching the theme criteria"""
+        theme_type = theme['theme_type']
+        theme_value = theme['theme_value']
+        
+        # Filter movies by theme
+        if theme_type == 'director':
+            matching = self.movies_df[
+                self.movies_df['Director'].str.contains(theme_value, case=False, na=False)
+            ]
+        elif theme_type == 'actor':
+            matching = self.movies_df[
+                self.movies_df['Actors'].str.contains(theme_value, case=False, na=False)
+            ]
+        elif theme_type == 'keyword':
+            matching = self.movies_df[
+                self.movies_df['Keywords'].str.contains(theme_value, case=False, na=False)
+            ]
+        elif theme_type == 'country':
+            matching = self.movies_df[
+                self.movies_df['Production_Countries'].str.contains(theme_value, case=False, na=False)
+            ]
+        elif theme_type == 'genre':
+            # Restore original genre format
+            original_genre = theme_value.replace(' + ', '|')
+            matching = self.movies_df[
+                self.movies_df['genres'] == original_genre
+            ]
+        elif theme_type == 'year':
+            # Extract decade
+            decade = int(theme_value.replace('s', ''))
+            matching = self.movies_df[
+                self.movies_df['title'].str.contains(f'\\(({decade}\\d)\\)', regex=True, na=False)
+            ]
+        else:
+            return []
+        
+        # Exclude already recommended
+        matching = matching[~matching['movieId'].isin(excluded_ids)]
+        
+        # Return top 3
+        results = []
+        for _, row in matching.head(3).iterrows():
+            results.append({
+                'movie_id': row['movieId'],
+                'title': row['title']
+            })
+        
+        return results
     
     def _extract_features_from_explanations(self, 
                                            section_a: List[Dict[str, Any]]) -> List[str]:

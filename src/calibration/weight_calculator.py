@@ -235,6 +235,129 @@ class WeightCalculator:
         weights = {'h1': round(w1, 2), 'h2': round(w2, 2), 'h3': round(w3, 2)}
         print(f"   Calculated Weights: {weights}")
         return weights
+    
+    def calculate_model_performance(self, num_groups: int = 20, k: int = 10) -> Dict[str, Dict]:
+        """
+        Calculate individual model performance metrics for multi-model selection.
+        
+        This method evaluates each model independently and ranks them by NDCG@K.
+        Used for quota-based selection in the multi-model recommendation system.
+        
+        Args:
+            num_groups: Number of test groups to create
+            k: Top-K for evaluation
+            
+        Returns:
+            Dictionary with performance metrics and rankings:
+            {
+                'h1': {'ndcg@10': 0.45, 'precision@10': 0.32, 'rank': 1},
+                'h2': {'ndcg@10': 0.38, 'precision@10': 0.28, 'rank': 2},
+                'h3': {'ndcg@10': 0.25, 'precision@10': 0.18, 'rank': 3}
+            }
+        """
+        from sklearn.metrics import ndcg_score
+        
+        print(f"\n[MODEL PERFORMANCE] Evaluating individual model performance...")
+        
+        # Load target users
+        target_users = self._load_target_users()
+        
+        # Create evaluation groups
+        groups = self._create_test_groups(num_groups, 2, 5, specific_user_ids=target_users)
+        
+        if not groups:
+            print("[WARNING] Could not create valid test groups. Returning default performance.")
+            return {
+                'h1': {'ndcg@10': 0.0, 'precision@10': 0.0, 'rank': 1},
+                'h2': {'ndcg@10': 0.0, 'precision@10': 0.0, 'rank': 2},
+                'h3': {'ndcg@10': 0.0, 'precision@10': 0.0, 'rank': 3}
+            }
+        
+        print(f"[INFO] Evaluating on {len(groups)} target-user groups...")
+        
+        # Evaluate each model
+        performance = {}
+        
+        for model_key in ['h1', 'h2', 'h3']:
+            model = self.models[model_key]
+            ndcg_scores = []
+            precision_scores = []
+            
+            for group in groups:
+                # Get ground truth
+                group_test = self.test_df[self.test_df['userId'].isin(group)]
+                if group_test.empty:
+                    continue
+                
+                agg = group_test.groupby('movieId')['rating'].agg(['mean', 'count'])
+                threshold = self.config.get('ground_truth_threshold', 3.5)
+                min_support = max(1, int(len(group) * 0.3))
+                
+                relevant = agg[(agg['mean'] >= threshold) & (agg['count'] >= min_support)]
+                if relevant.empty:
+                    continue
+                
+                ground_truth = relevant['mean'].to_dict()
+                
+                # Get recommendations
+                all_movies = self.train_df['movieId'].value_counts().head(2000).index.tolist()
+                watched = set()
+                for uid in group:
+                    u_rows = self.train_df[self.train_df['userId'] == uid]
+                    watched.update(u_rows['movieId'].tolist())
+                
+                candidates = [m for m in all_movies if m not in watched]
+                if not candidates:
+                    continue
+                
+                try:
+                    recs = model.recommend_for_group(group, candidates, top_k=k)
+                    if not recs:
+                        continue
+                    
+                    rec_ids = [r['movie_id'] for r in recs]
+                    rec_scores = [r['score'] for r in recs]
+                    
+                    # Calculate NDCG
+                    true_relevance = [ground_truth.get(mid, 0.0) for mid in rec_ids]
+                    if sum(true_relevance) > 0:
+                        ndcg = ndcg_score([true_relevance], [rec_scores], k=min(k, len(rec_ids)))
+                        ndcg_scores.append(ndcg)
+                    
+                    # Calculate Precision
+                    hits = sum(1 for mid in rec_ids if mid in ground_truth)
+                    precision = hits / k
+                    precision_scores.append(precision)
+                    
+                except Exception as e:
+                    print(f"[WARNING] Evaluation failed for {model_key}: {e}")
+                    continue
+            
+            # Store metrics
+            performance[model_key] = {
+                f'ndcg@{k}': round(np.mean(ndcg_scores), 4) if ndcg_scores else 0.0,
+                f'precision@{k}': round(np.mean(precision_scores), 4) if precision_scores else 0.0
+            }
+            
+            print(f"   {model_key.upper()}: NDCG@{k}={performance[model_key][f'ndcg@{k}']:.4f}, "
+                  f"Precision@{k}={performance[model_key][f'precision@{k}']:.4f}")
+        
+        # Rank models by NDCG
+        sorted_models = sorted(
+            performance.items(),
+            key=lambda x: x[1][f'ndcg@{k}'],
+            reverse=True
+        )
+        
+        for rank, (model_key, metrics) in enumerate(sorted_models, 1):
+            performance[model_key]['rank'] = rank
+        
+        print(f"\n[RANKING] Model ranks: ", end="")
+        for model_key in ['h1', 'h2', 'h3']:
+            print(f"{model_key.upper()}=#{performance[model_key]['rank']} ", end="")
+        print()
+        
+        return performance
 
 
 def calculate_production_weights(config: Dict) -> Dict[str, float]:
@@ -265,3 +388,56 @@ def calculate_production_weights(config: Dict) -> Dict[str, float]:
     weights = calculator.calculate_weights(num_groups=config.get('num_groups', 20))
     
     return weights
+
+
+def calculate_model_performance_metrics(config: Dict, save_path: str = None) -> Dict[str, Dict]:
+    """
+    Calculate and save individual model performance metrics.
+    
+    This function evaluates each model independently and saves performance
+    metrics for use in multi-model selection systems.
+    
+    Args:
+        config: Configuration dictionary with evaluation parameters
+        save_path: Optional path to save performance JSON (default: data/cache/model_performance.json)
+        
+    Returns:
+        Dictionary with model performance metrics and rankings
+    """
+    import json
+    
+    # Load data
+    print("[1/3] Loading data...")
+    ratings = load_ratings().sort_values('timestamp').tail(config.get('ratings_used', 100000))
+    movies = load_movies()
+    watchlists = load_watchlists()
+    
+    print(f"   Using {len(ratings)} ratings")
+    
+    # Split data
+    print("[2/3] Creating temporal splits...")
+    train, val, test = temporal_train_validation_test_split(ratings, 0.8, 0.1)
+    
+    # Calculate performance
+    print("[3/3] Calculating model performance...")
+    calculator = WeightCalculator(train, val, test, movies, watchlists, config)
+    performance = calculator.calculate_model_performance(
+        num_groups=config.get('num_groups', 20),
+        k=10
+    )
+    
+    # Save to file
+    if save_path is None:
+        cache_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "data", "cache"
+        )
+        os.makedirs(cache_dir, exist_ok=True)
+        save_path = os.path.join(cache_dir, "model_performance.json")
+    
+    with open(save_path, 'w') as f:
+        json.dump(performance, f, indent=4)
+    
+    print(f"\n✅ Model performance saved to: {save_path}")
+    
+    return performance

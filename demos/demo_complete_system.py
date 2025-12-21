@@ -23,71 +23,44 @@ from src.utils.model_utils import quick_setup
 from src.pipeline.structured_output_generator import StructuredOutputGenerator
 
 
-def demo_group_recommendations(models, group_users=[618, 623]):
-    """Test basic group recommendations."""
-    print("\n" + "=" * 80)
-    print("DEMO 1: BASIC GROUP RECOMMENDATIONS")
-    print("=" * 80)
-    
-    print(f"\nGroup Users: {group_users}")
-    
-    # Get candidates
-    print("\n[1/2] Generating candidates...")
-    
-    cf_matrix = models['cf_matrix']
-    watched = set()
-    for uid in group_users:
-        if uid in cf_matrix.index:
-            user_watched = cf_matrix.loc[uid].dropna().index.tolist()
-            watched.update(user_watched)
-            print(f"   User {uid}: {len(user_watched)} movies watched")
-    
-    # Use popular movies as candidates
-    popular = cf_matrix.count().sort_values(ascending=False).head(200).index.tolist()
-    candidates = [m for m in popular if m not in watched][:50]
-    
-    print(f"   Total candidates: {len(candidates)}")
-    
-    # Get recommendations
-    print("\n[2/2] Getting group recommendations...")
-    recs = models['h1'].recommend_for_group(group_users, candidates, top_k=5)
-    
-    print("\n--- Top 5 Group Recommendations ---\n")
-    
-    movies = models['movies']
-    for i, rec in enumerate(recs, 1):
-        mid = rec['movie_id']
-        score = rec['score']
-        group_expl = rec['group_explanation']
-        
-        # Get title
-        movie_row = movies[movies['movieId'] == mid]
-        title = movie_row['title'].values[0] if len(movie_row) > 0 else f"Movie {mid}"
-        
-        print(f"#{i} {title}")
-        print(f"   Score: {score:.3f}")
-        print(f"   Group Reason: {group_expl}")
-        
-        print(f"\n   Individual Explanations:")
-        for uid, expl in rec['explanations'].items():
-            primary = expl.get('primary_reason', 'N/A')
-            confidence = expl.get('confidence_level', 'N/A')
-            print(f"      User {uid} ({confidence}): {primary}")
-        
-        print()
-    
-    print("=" * 80)
 
 
 def demo_structured_output(models, group_users=[618, 623]):
-    """Test structured 3-section output generation."""
+    """Test structured 3-section output generation with Ensemble in Section A."""
     print("\n" + "=" * 80)
-    print("DEMO 2: STRUCTURED OUTPUT (3 SECTIONS)")
+    print("DEMO: STRUCTURED OUTPUT (3 SECTIONS) - WITH QUOTA-BASED ENSEMBLE")
     print("=" * 80)
     
     print(f"\nGroup Users: {group_users}")
     
-    # Initialize generator
+    # Load ensemble weights
+    weights_path = os.path.join(
+        os.path.dirname(__file__), "..", "data", "cache", "models", "model_weights.json"
+    )
+    
+    if os.path.exists(weights_path):
+        with open(weights_path, 'r') as f:
+            weights_data = json.load(f)
+        
+        # Handle both dict and list formats
+        if isinstance(weights_data, dict):
+            weights = [weights_data.get('h1', 0.5), weights_data.get('h2', 0.3), weights_data.get('h3', 0.2)]
+        else:
+            weights = weights_data
+            
+        print(f"✅ Ensemble Weights: H1={weights[0]:.2f}, H2={weights[1]:.2f}, H3={weights[2]:.2f}")
+    else:
+        weights = [0.33, 0.33, 0.34]
+        print("⚠️  Using equal weights (weights file not found)")
+    
+    # Create ensemble for Section A
+    from src.recommender.hybrid.ensemble_model import EnsembleRecommender
+    ensemble = EnsembleRecommender(
+        models=[models['h1'], models['h2'], models['h3']], 
+        weights=weights
+    )
+    
+    # Initialize generator with multi-model selection
     generator = StructuredOutputGenerator(
         hybrid_model_1=models['h1'],
         hybrid_model_2=models['h2'],
@@ -96,7 +69,8 @@ def demo_structured_output(models, group_users=[618, 623]):
         watchlist_df=models['watchlists'],
         cf_matrix=models['cf_matrix'],
         ratings_df=models['ratings'],
-        enable_temporal_filtering=True
+        enable_temporal_filtering=True,
+        use_multi_model_selection=True  # Enable multi-model selection
     )
     
     # Generate output
@@ -152,9 +126,10 @@ def demo_structured_output(models, group_users=[618, 623]):
         print("\nNo shared themes detected.")
     else:
         for i, theme in enumerate(section_c[:2], 1):  # Show top 2
-            print(f"\n[THEME {i}] {theme['theme_title']}")
+            print(f"\n[THEME {i}] {theme['theme_name']}")  # Changed from theme_title
             print(f"   Type: {theme['theme_type']}")
-            print(f"   Basis: {theme['explanation_basis']}")
+            print(f"   Justification: {theme['justification']}")  # Changed from explanation_basis
+            print(f"   User Count: {theme.get('user_count', 'N/A')}")
             print(f"\n   Movies:")
             for movie in theme['recommended_movies'][:3]:
                 print(f"      • {movie['title']}")
@@ -179,11 +154,16 @@ def demo_temporal_analysis(models, group_users=[618, 623]):
     for uid in group_users:
         profile = analyzer.get_user_temporal_profile(uid)
         
+        current_year = 2024  # Or dynamically: datetime.now().year
+        avg_age = current_year - profile['mean_release_year']
+        recency_score = 1.0 - (min(avg_age, 50) / 50.0) # Simple normalization
+        
         print(f"User {uid}:")
         print(f"   Preference Type: {profile['preference_type']}")
-        print(f"   Average Movie Age: {profile['avg_movie_age']:.1f} years")
-        print(f"   Recency Score: {profile['recency_score']:.2f} (0=classic, 1=recent)")
-        print(f"   Acceptable Year Range: {profile['min_acceptable_year']}-{profile['max_acceptable_year']}")
+        print(f"   Average Movie Age: {avg_age:.1f} years") # Calculated
+        print(f"   Recency Score: {recency_score:.2f} (0=classic, 1=recent)") # Calculated
+        min_y, max_y = profile['year_range']
+        print(f"   Acceptable Year Range: {min_y}-{max_y}")
         print(f"   Total Ratings: {profile['total_ratings']}")
         print()
     
@@ -218,14 +198,27 @@ def main():
     group_users = [618, 623]
     
     # Run demos
-    demo_group_recommendations(models, group_users=group_users)
-    output = demo_structured_output(models, group_users=group_users)
-    demo_temporal_analysis(models, group_users=group_users)
+    demo_structured_output(models, group_users=group_users)
+    # demo_temporal_analysis(models, group_users=group_users)  # Disabled for now
     
     # Save output
     print("\n" + "=" * 80)
     print("SAVING OUTPUT")
     print("=" * 80)
+    
+    # Generate final output for saving
+    from src.pipeline.structured_output_generator import StructuredOutputGenerator
+    generator = StructuredOutputGenerator(
+        hybrid_model_1=models['h1'],
+        hybrid_model_2=models['h2'],
+        hybrid_model_3=models['h3'],
+        movies_df=models['movies'],
+        watchlist_df=models['watchlists'],
+        cf_matrix=models['cf_matrix'],
+        ratings_df=models['ratings'],
+        enable_temporal_filtering=True
+    )
+    output = generator.generate_three_section_output(group_users)
     
     output_file = os.path.join(
         os.path.dirname(__file__), 

@@ -294,66 +294,6 @@ class GroupRecommenderEvaluator:
             'unique_recs': len(all_recs)  # Added for transparency
         }
 
-    def calculate_production_weights(self, num_groups=20) -> Dict[str, float]:
-        """
-        Calculate optimal model weights based on NDCG performance.
-        Now supports TARGETED CALIBRATION for users in users.csv.
-        
-        IMPORTANT EVALUATION STRATEGY:
-        - TRAINING: ALL models (H1, H2, H3) are trained on ALL users for better CF quality
-        - EVALUATION: Groups are composed ONLY of target users from users.csv
-        - This ensures personalized weight calibration while maintaining model quality
-        """
-        print("\n[WEIGHT OPTIMIZATION] Calculating dynamic model weights...")
-        print("[INFO] Models are trained on ALL users, but calibration uses TARGET user groups")
-        
-        # 1. Load specific target users for group composition
-        target_users = self._load_valid_users()
-        
-        # Create evaluation groups using ONLY target users
-        # (Models are already trained on all users via train_df in __init__)
-        groups = self.create_test_groups(num_groups, 2, 5, specific_user_ids=target_users)
-        
-        if not groups:
-            print("[WARNING] Could not create valid test groups from target users. Falling back to defaults.")
-            return {'h1': 0.6, 'h2': 0.3, 'h3': 0.1} # Default fallback
-            
-        print(f"[INFO] Calibrating ALL models on {len(groups)} target-user group configurations...")
-            
-        # Evaluate all models on target user groups
-        res_h1 = self.evaluate_model('h1', groups, k=10)
-        res_h2 = self.evaluate_model('h2', groups, k=10)
-        res_h3 = self.evaluate_model('h3', groups, k=10)
-        
-        s1 = res_h1['mean_ndcg']
-        s2 = res_h2['mean_ndcg']
-        s3 = res_h3['mean_ndcg']
-        
-        print(f"   H1 (Hybrid) NDCG:    {s1:.4f}")
-        print(f"   H2 (Switching) NDCG: {s2:.4f}")
-        print(f"   H3 (Watchlist) NDCG: {s3:.4f}")
-        
-        # Weighted Softmax-like distribution
-        total_score = s1 + s2 + s3
-        
-        if total_score < 0.01:
-            # If everything failed (e.g. no test data coverage), use safe defaults
-             w1, w2, w3 = 0.5, 0.3, 0.2
-        else:
-            w1 = s1 / total_score
-            w2 = s2 / total_score
-            w3 = s3 / total_score
-            
-        # Enforce Minimums (Safety Nets)
-        w1 = max(w1, 0.1)
-        w2 = max(w2, 0.1)
-        w3 = max(w3, 0.1) # Boost watchlist min weight
-        
-        # Re-normalize
-        total = w1 + w2 + w3
-        w1, w2, w3 = w1/total, w2/total, w3/total
-            print(f"   Calculated Personal Weights: {weights}")
-        return weights
 
 
 def run_weight_optimization():
