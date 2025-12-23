@@ -178,29 +178,15 @@ function GroupCreation() {
             const data = await response.json();
 
             // Detailed logging for Trust Mode
-            console.group('✨ Trust Mode - Top Recommendation');
-            console.log('Method:', data.method);
-            console.log('Total Candidates:', data.total_candidates);
-
-            if (data.agent_recommendation) {
-                console.group('🎬 Recommended Movie');
-                console.log('Title:', data.agent_recommendation.title);
-                console.log('Reason:', data.agent_recommendation.reason);
-                console.log('Score:', data.agent_recommendation.score?.toFixed(2));
-                console.log('Genres:', data.agent_recommendation.genres?.join(', '));
-                console.log('Director:', data.agent_recommendation.director);
-                console.log('Actors:', data.agent_recommendation.actors);
-                console.log('Rating:', data.agent_recommendation.vote_average);
-                console.log('Runtime:', data.agent_recommendation.runtime, 'min');
-                console.log('Overview:', data.agent_recommendation.overview);
-                console.groupEnd();
-            }
-
-            console.groupEnd();
+            console.log('✨ Trust Mode Results:', data);
 
             // TODO: Show recommendation in a results modal
             setIsLoading(false);
-            alert(`🎬 ${data.agent_recommendation.title}\n\n${data.agent_recommendation.reason}`);
+            // Result handling
+            setIsLoading(false);
+            // Navigate to results page
+            navigate('/results', { state: { results: data, mode: 'trust' } });
+
 
         } catch (error) {
             console.error('Recommendation error:', error);
@@ -234,36 +220,15 @@ function GroupCreation() {
             const data = await response.json();
 
             // Detailed logging for AI Agent analysis
-            console.group('🤖 AI Agent Analysis Results');
-
-            if (data.filters_applied) {
-                console.group('🔍 Sentiment Analysis & Filters Applied');
-                console.log('User Prompt:', prompt);
-                console.table(data.filters_applied);
-                console.log('Total Candidates:', data.total_candidates);
-                console.log('After Filtering:', data.filtered_count);
-                console.groupEnd();
-            }
-
-            if (data.agent_recommendation) {
-                console.group('⭐ Agent\'s Recommendation');
-                console.log('Title:', data.agent_recommendation.title);
-                console.log('Reason:', data.agent_recommendation.reason);
-                console.log('Score:', data.agent_recommendation.score);
-                console.log('Genres:', data.agent_recommendation.genres);
-                console.log('Director:', data.agent_recommendation.director);
-                console.log('Actors:', data.agent_recommendation.actors);
-                console.log('Runtime:', data.agent_recommendation.runtime, 'min');
-                console.log('Rating:', data.agent_recommendation.vote_average);
-                console.log('Overview:', data.agent_recommendation.overview);
-                console.groupEnd();
-            }
-
-            console.groupEnd();
+            console.log('🤖 Recommendation Results:', data);
 
             // TODO: Show recommendation in a results modal
             setIsLoading(false);
-            alert(`🎬 ${data.agent_recommendation.title}\n\n${data.agent_recommendation.reason}`);
+            // Result handling
+            setIsLoading(false);
+            // Navigate to results page
+            navigate('/results', { state: { results: data, userPrompt: prompt, mode: 'guided' } });
+
 
         } catch (error) {
             console.error('Recommendation error:', error);
