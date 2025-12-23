@@ -133,7 +133,7 @@ class ModelFactory:
         watchlists: pd.DataFrame,
         normalization: str = 'zscore',
         item_k: int = 20,
-        user_k: int = 30
+        user_k: int = 20  # Updated from 30 to 20 based on UBCF grid search results
     ):
         """
         Initialize the model factory.
@@ -178,6 +178,7 @@ class ModelFactory:
         """Compute item and user similarities with caching."""
         from src.recommender.IBCF.neighbors_item import load_or_compute_item_neighbors
         from src.recommender.UBCF.neighbors_user import load_or_compute_neighbors
+        from src.recommender.UBCF.similarity_user import cosine_sim
         
         # Item similarity (cosine on normalized matrix)
         item_sim_matrix = cosine_similarity(self.norm_matrix.fillna(0).T)
@@ -195,11 +196,18 @@ class ModelFactory:
         )
         
         # Compute user neighbors with caching
+        # EXPERIMENTAL RESULT: Cosine Similarity with K=20, Min_Overlap=5 achieved best NDCG@10 = 0.3600
+        # Grid Search tested: Pearson_SW, Pearson_Shrink, Cosine with K={20,50}, Overlap={5,10}
+        # Winner: Cosine K=20 Overlap=5 (see: src/experiments/results/ubcf_grid_search_ndcg.csv)
+        # Literature: Sarwar et al. (2001) - Cosine performs better on sparse data
+        from functools import partial
+        cosine_with_overlap = partial(cosine_sim, MIN_OVERLAP=5)
+        
         self.user_neighbors = load_or_compute_neighbors(
             self.cf_matrix, 
-            pearson_shrink, 
-            K=self.user_k,
-            metric="pearson_shrink"
+            cosine_with_overlap,  # Changed from pearson_shrink to cosine_sim
+            K=self.user_k,  # Will use K=20 from __init__ default
+            metric="cosine_overlap5"  # Cache key
         )
     
     def create_ibcf(self, top_k: int = 20) -> ItemBasedCF:
@@ -296,7 +304,7 @@ def quick_setup(
     recent_count: int = 50000,
     normalization: str = 'zscore',
     item_k: int = 20,
-    user_k: int = 30,
+    user_k: int = 20,  # Updated from 30 to 20 based on UBCF grid search results
     C: float = 1.0
 ) -> Dict:
     """

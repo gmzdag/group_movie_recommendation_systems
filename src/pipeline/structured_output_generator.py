@@ -404,12 +404,17 @@ class StructuredOutputGenerator:
             
             # Filter explanations (no direct watchlist)
             user_explanations = {}
-            for uid, expl in rec['explanations'].items():
-                if not self._is_direct_watchlist_explanation(expl):
-                    user_explanations[uid] = expl
+            # SAFETY: Check if explanations exists and is a dict
+            if rec.get('explanations') and isinstance(rec['explanations'], dict):
+                for uid, expl in rec['explanations'].items():
+                    if not self._is_direct_watchlist_explanation(expl):
+                        user_explanations[uid] = expl
             
-            if not user_explanations:
-                continue
+            # TEMP FIX: Allow empty explanations\r\n
+            
+            # if not user_explanations:\r\n
+            
+            #     continue
             
             section_a_output.append({
                 'movie_id': movie_id,
@@ -495,13 +500,18 @@ class StructuredOutputGenerator:
             title = self._get_movie_title(movie_id)
             
             user_explanations = {}
-            for uid, expl in rec['explanations'].items():
-                if self._is_direct_watchlist_explanation(expl):
-                    continue
-                user_explanations[uid] = expl
+            # SAFETY: Check if explanations exists and is a dict
+            if rec.get('explanations') and isinstance(rec['explanations'], dict):
+                for uid, expl in rec['explanations'].items():
+                    if self._is_direct_watchlist_explanation(expl):
+                        continue
+                    user_explanations[uid] = expl
             
-            if not user_explanations:
-                continue
+            # TEMP FIX: Allow empty explanations\r\n
+            
+            # if not user_explanations:\r\n
+            
+            #     continue
             
             section_a_output.append({
                 'movie_id': movie_id,

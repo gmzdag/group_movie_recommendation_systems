@@ -33,44 +33,52 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # ----------------------------------------------------------------------------
 # NDCG Helper Function
 # ----------------------------------------------------------------------------
-def compute_ndcg_at_k(recommended_items, user_validation_ratings, k=10, threshold=3.5):
+def compute_ndcg_at_k(recommended_items, user_validation_ratings, candidate_pool, k=10, threshold=3.5):
     """
-    Compute NDCG@K for a single user.
+    Compute NDCG@K for a single user with candidate-aware IDCG.
+    
+    Uses graded relevance (full rating values) and candidate-aware IDCG calculation
+    as per Cremonesi et al. (2010) methodology for negative sampling evaluation.
     
     Args:
         recommended_items: List of item_ids recommended by the model (ranked).
         user_validation_ratings: Dict of {item_id: true_rating} for the user in validation set.
+        candidate_pool: List of candidate items (relevant + negatives) used for ranking.
         k: Cutoff rank.
         threshold: Rating threshold for relevance (default 3.5 as per evaluation_config).
         
     Returns:
         ndcg_score (float)
+        
+    References:
+        - Järvelin & Kekäläinen (2002): Graded relevance NDCG formula
+        - Cremonesi et al. (2010): Candidate-aware IDCG for negative sampling
     """
-    # 1. Construct Relevance Vector (rel)
+    # 1. Construct Relevance Vector using GRADED RELEVANCE
+    # Graded: Use actual rating values (3.5, 4.0, 4.5, 5.0) for relevant items
+    # This better captures the value difference between "liked" and "loved" items
     relevance = []
-    threshold = 3.5
     
     for mid in recommended_items[:k]:
-        # Get true rating
         true_rating = user_validation_ratings.get(mid, 0.0)
         
-        # Apply Threshold Logic (Scientifically critical for High Precision/NDCG optimization)
-        # We only want to reward the model for ranking "Liked" items high.
-        # If user rated it < 3.5, it is irrelevant (or even negative).
+        # Graded Relevance: Keep full rating if >= threshold, else 0
         if true_rating >= threshold:
-            rel = true_rating
+            rel = true_rating  # Full rating (e.g., 4.5, 5.0)
         else:
-            rel = 0.0
+            rel = 0.0  # Not relevant
             
         relevance.append(rel)
         
-    # 2. Compute DCG
+    # 2. Compute DCG using graded relevance formula
+    # Järvelin & Kekäläinen (2002): DCG = sum((2^rel - 1) / log2(i+2))
+    # Exponential gain (2^r - 1) heavily rewards highly-rated items
     def dcg(rel_vec):
         score = 0.0
         for i, r in enumerate(rel_vec):
             if r > 0:
-                # Using standard log2(i+2) formulation (index 0 becomes 2)
-                score += r / np.log2(i + 2)
+                # Exponential gain: 5-star (2^5-1=31) >> 4-star (2^4-1=15)
+                score += (2**r - 1) / np.log2(i + 2)
         return score
         
     actual_dcg = dcg(relevance)
@@ -78,11 +86,24 @@ def compute_ndcg_at_k(recommended_items, user_validation_ratings, k=10, threshol
     if actual_dcg == 0:
         return 0.0
         
-    # 3. Compute IDCG (Ideal DCG)
-    # The best possible relevance vector is the user's validation ratings sorted descending,
-    # BUT only those that meet the threshold!
-    all_known_ratings = [r for r in user_validation_ratings.values() if r >= threshold]
-    ideal_relevance = sorted(all_known_ratings, reverse=True)[:k]
+    # 3. Compute CANDIDATE-AWARE IDCG (Critical for negative sampling!)
+    # Cremonesi et al. (2010): IDCG should only consider items in the candidate pool
+    # Otherwise, NDCG is systematically underestimated when using negative sampling
+    
+    candidate_set = set(candidate_pool)
+    
+    # Get relevant ratings ONLY from items in candidate pool
+    candidate_relevant_ratings = [
+        r for mid, r in user_validation_ratings.items()
+        if mid in candidate_set and r >= threshold
+    ]
+    
+    if not candidate_relevant_ratings:
+        # No relevant items in candidate pool -> NDCG is 0 (can't do better than 0)
+        return 0.0
+    
+    # Ideal ranking: Sort candidate relevant items by rating (descending)
+    ideal_relevance = sorted(candidate_relevant_ratings, reverse=True)[:k]
     ideal_dcg = dcg(ideal_relevance)
     
     if ideal_dcg == 0:
@@ -129,21 +150,26 @@ def evaluate_model_ndcg(model, R_train, val_df, k=10):
         watched_in_train = R_train.loc[uid].dropna().index
         
         # 3. Clean Predictions & SAMPLE CANDIDATES (Scientifically Standard for Offline Eval)
-        # Fix for 0.001 score: 
-        # Ranking against 10,000 items (Full Rank) yields tiny scores.
-        # Standard approach (Cremonesi et al., RecSys 2010): Rank "Positives" vs "100 Negatives".
+        # Cremonesi et al. (RecSys 2010): "Performance of Recommender Algorithms on Top-N Recommendation Tasks"
+        # Standard approach: Rank "Positives" vs "100 Negatives" to avoid full-rank bias.
+        # Ranking against 10,000 items (Full Rank) yields tiny scores and is computationally expensive.
         
-        # Identify "Relevant" items (Positives)
+        # Identify "Relevant" items (Positives) - items rated >= threshold in validation
         relevant_items = [m for m, r in true_ratings.items() if r >= 3.5]
         
-        # Identify Candidates: Relevant + 100 Random Unwatched Items from Universe
-        all_items = R_train.columns.tolist()
-        # Filter out watched
-        unwatched_candidates = [m for m in all_items if m not in watched_in_train and m not in user_val_map]
+        # Get this user's validation items to exclude from negatives
+        user_val_items = set(true_ratings.keys())
         
-        # Sample 100 negatives
+        # Identify Candidates: All items NOT in training and NOT in validation
+        all_items = R_train.columns.tolist()
+        unwatched_candidates = [m for m in all_items 
+                               if m not in watched_in_train 
+                               and m not in user_val_items]
+        
+        # Sample 100 negatives with USER-SPECIFIC SEED for deterministic but varied sampling
+        # Cremonesi et al. (2010): Each user should have different but reproducible negative samples
         import random
-        # random.seed(42) # Optional: Fixed seed for consistency
+        random.seed(42 + uid)  # User-specific seed: deterministic but different per user
         if len(unwatched_candidates) > 100:
             negatives = random.sample(unwatched_candidates, 100)
         else:
@@ -179,8 +205,8 @@ def evaluate_model_ndcg(model, R_train, val_df, k=10):
             hits = set(top_item_ids).intersection(set(relevant_items))
             print(f"       Hits in Top {k}: {len(hits)} -> {list(hits)}")
         
-        # 5. Compute NDCG
-        score = compute_ndcg_at_k(top_item_ids, true_ratings, k=k, threshold=3.5)
+        # 5. Compute NDCG with candidate-aware IDCG
+        score = compute_ndcg_at_k(top_item_ids, true_ratings, candidate_pool, k=k, threshold=3.5)
         ndcg_scores.append(score)
         
         count += 1
@@ -225,7 +251,7 @@ if __name__ == "__main__":
     
     # 2. Define Grid
     # ADJUSTED: Added '5' to overlap, '50' to neighbors to find a working setting
-    K_VALUES = [50, 100]
+    K_VALUES = [20, 50]
     OVERLAP_VALUES = [5, 10] # Reduced minimum overlap to solve sparsity
     
     # Similarity Functions configuration

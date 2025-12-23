@@ -36,7 +36,7 @@ def get_models():
     if _models_cache is None:
         print("[API] Initializing Recommendation Models...")
         _models_cache = quick_setup(
-            recent_only=True,
+            recent_only=False,  # FIXED: Include all ratings for power users
             recent_count=50000,
             normalization='zscore',
             item_k=20,
