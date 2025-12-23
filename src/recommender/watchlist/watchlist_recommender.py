@@ -6,15 +6,35 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from recommender.CB.content_based import ContentBasedModel
 
-class GroupWatchlistRecommender:
+
+class WatchlistRecommender:
     """
-    Watchlist-based Group Content Recommender.
-    Uses ContentBasedModel for vectorization and Average Strategy for score aggregation.
+    Watchlist-based Content Recommender (Individual & Group).
+    
+    SCIENTIFIC APPROACH:
+    - Uses ContentBasedModel for TF-IDF vectorization
+    - Individual: AVERAGE profile strategy (mean of all watchlist items)
+    - Group: Consensus scoring with disagreement penalty
+    
+    This is different from Hybrid Model 3 which uses MAX similarity for individuals.
     """
-    def __init__(self, movies_df: pd.DataFrame, ratings_df: pd.DataFrame, watchlist_df: pd.DataFrame):
+    def __init__(self, movies_df: pd.DataFrame, ratings_df: pd.DataFrame, 
+                 watchlist_df: pd.DataFrame, disagreement_penalty: float = 0.5,
+                 cb_model: Optional['ContentBasedModel'] = None):
+        """
+        Args:
+            movies_df: Movies metadata
+            ratings_df: User ratings (for ContentBasedModel)
+            watchlist_df: User watchlists
+            disagreement_penalty: Weight for disagreement penalty in consensus scoring (0.0-1.0)
+                                 Higher = more penalty for disagreement (favors fairness)
+                                 Lower = less penalty (favors average similarity)
+            cb_model: Optional pre-built ContentBasedModel (for optimization speed)
+        """
         self.movies_df = movies_df
         self.ratings_df = ratings_df
         self.watchlist_df = watchlist_df
+        self.disagreement_penalty = disagreement_penalty
         
         # Prepare Title Map
         self.title_map = (
@@ -26,8 +46,12 @@ class GroupWatchlistRecommender:
             .to_dict()
         )
         
-        # Initialize Content-Based Model (for TF-IDF and vectors)
-        self.cb_model = ContentBasedModel(self.movies_df, self.ratings_df)
+        # Initialize or reuse Content-Based Model (for TF-IDF and vectors)
+        if cb_model is not None:
+            print(f"[DEBUG] Reusing pre-built ContentBasedModel (optimization mode)")
+            self.cb_model = cb_model
+        else:
+            self.cb_model = ContentBasedModel(self.movies_df, self.ratings_df)
 
     def get_user_seeds(self, user_id: int) -> Set[int]:
         """Returns movie IDs from a user's watchlist."""
@@ -62,9 +86,38 @@ class GroupWatchlistRecommender:
         all_movie_ids = set(self.title_map.keys())
         return all_movie_ids - excluded
 
-    def recommend(self, group_users: Sequence[int], top_n: int = 10) -> Dict:
+    def predict(self, user_id: int, movie_id: int) -> float:
+        """
+        Individual prediction using AVERAGE profile strategy.
+        
+        SCIENTIFIC NOTE:
+        - Builds average profile from ALL watchlist items
+        - Different from Hybrid Model 3's MAX similarity approach
+        
+        Returns: 0.0 to 5.0 (cosine similarity * 5)
+        """
+        seeds = self.get_user_seeds(user_id)
+        if not seeds or movie_id not in self.cb_model.movie_to_idx:
+            return np.nan
+        
+        profile = self.build_profile_vector(list(seeds))
+        if profile is None:
+            return np.nan
+        
+        idx = self.cb_model.movie_to_idx[movie_id]
+        movie_vec = self.cb_model.tfidf_matrix[idx]
+        score = cosine_similarity(profile, movie_vec)[0][0]
+        
+        return score * 5.0
+
+    def recommend(self, group_users: Sequence[int], candidates: Optional[List[int]] = None, top_k: int = 10) -> Dict:
         """
         Generates group recommendations.
+        
+        Args:
+            group_users: List of user IDs in the group
+            candidates: Optional list of candidate movie IDs. If None, will be computed automatically.
+            top_k: Number of recommendations to return
         """
         # 1. Build User Profiles
         user_profiles = {}
@@ -89,7 +142,11 @@ class GroupWatchlistRecommender:
         common = set.intersection(*all_seeds) if all_seeds else set()
 
         # 3. Get Candidates
-        candidates = self.get_candidate_movies(group_users)
+        if candidates is None:
+            candidates = self.get_candidate_movies(group_users)
+        else:
+            # Use provided candidates (for evaluation consistency)
+            candidates = list(candidates)
 
         # 4. Score Candidates
         final_scores: List[Tuple[int, float, bool]] = []
@@ -120,7 +177,8 @@ class GroupWatchlistRecommender:
             disagreement = np.std(metrics)
             
             # Consensus Score: Average - Penalty for Disagreement
-            consensus_score = avg_score - (disagreement * 0.5)
+            # Use tunable disagreement_penalty parameter
+            consensus_score = avg_score - (disagreement * self.disagreement_penalty)
 
             # Common Boost
             is_common_boosted = False
@@ -134,7 +192,7 @@ class GroupWatchlistRecommender:
 
         # 5. Rank
         ranked = sorted(final_scores, key=lambda x: x[1], reverse=True)
-        top_items = ranked[:top_n]
+        top_items = ranked[:top_k]
 
         # 6. Generate Explanations
         explained_results = []
@@ -187,3 +245,11 @@ class GroupWatchlistRecommender:
             "recommended_movies": explained_results,
             "movie_titles": self.title_map,
         }
+    
+    def recommend_for_group(self, user_ids: List[int], candidates: Optional[List[int]] = None, 
+                           top_k: int = 10) -> Dict:
+        """
+        API compatibility wrapper for recommend method.
+        Allows WatchlistRecommender to work with optimization scripts.
+        """
+        return self.recommend(user_ids, candidates, top_k)

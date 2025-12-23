@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from typing import List, Dict, Any
 from sklearn.metrics.pairwise import cosine_similarity
-from src.recommender.CB.content_based import ContentBasedModel
+from ..CB.content_based import ContentBasedModel
 
 class WatchlistHybridModel:
     """
@@ -69,7 +69,7 @@ class WatchlistHybridModel:
         """
         Generates Watchlist explanation signals.
         """
-        from src.recommender.explanation_engine import ExplanationEngine
+        from ..explanation_engine import ExplanationEngine
         
         signals = []
         

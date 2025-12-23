@@ -22,7 +22,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
 from sklearn.metrics.pairwise import cosine_similarity
 
-from src.recommender.data_loader import load_ratings, build_cf_matrix
+from src.recommender.data_loader import build_cf_matrix, load_train_valid_test_splits
 
 # ------------------------------------------------------------
 # Normalization Methods
@@ -253,15 +253,17 @@ def plot_results(results, output_file="itemcf_hyperparam_curves.svg"):
 # ------------------------------------------------------------
 if __name__ == "__main__":
     
-    # 1. Load Data
-    all_ratings = load_ratings()
+    # 1. Load Fixed Splits
+    print("Loading Fixed Splits...")
+    train_df, valid_df, test_df = load_train_valid_test_splits()
     
-    # 2. Fixed Train/Test Split
-    # Sample 1000 interactions for testing
-    test_df = all_ratings.sample(n=1000, random_state=42)
-    train_df = all_ratings.drop(test_df.index)
+    # Optional: Subsample test set for faster experimentation
+    # (but still using the same base split as other experiments)
+    if len(test_df) > 2000:
+        print(f"Subsampling test set from {len(test_df)} to 2000 for speed...")
+        test_df = test_df.sample(n=2000, random_state=42)
     
-    print(f"Data Split: Train={len(train_df)}, Test={len(test_df)}")
+    print(f"Data Split: Train={len(train_df)}, Valid={len(valid_df)}, Test={len(test_df)}")
     
     results = []
     

@@ -122,6 +122,37 @@ def load_or_compute_neighbors(R, sim_fn, K=25, metric="pearson"):
     return neighbors
 
 
+def compute_neighbors(R, sim_fn, K=25, min_overlap=10):
+    """
+    Compute neighbors with custom min_overlap parameter.
+    Used for Bayesian Optimization experiments.
+    
+    Args:
+        R: User-item rating matrix (DataFrame)
+        sim_fn: Similarity function
+        K: Number of neighbors
+        min_overlap: Minimum overlap for similarity calculation
+    
+    Returns:
+        Dictionary of {user_id: {neighbor_id: similarity, ...}}
+    """
+    from functools import partial
+    
+    print(f"\n[COMPUTE] Computing neighbors: K={K}, min_overlap={min_overlap}")
+    
+    # Create a partial function with min_overlap parameter
+    # Check if similarity function accepts MIN_OVERLAP
+    if 'MIN_OVERLAP' in sim_fn.__code__.co_varnames:
+        sim_fn_configured = partial(sim_fn, MIN_OVERLAP=min_overlap)
+    else:
+        sim_fn_configured = sim_fn
+    
+    # Use the existing precompute function
+    neighbors = precompute_all_user_neighbors(R, sim_fn_configured, K)
+    
+    return neighbors
+
+
 def update_neighbors_for_new_user(cache_path, neighbors, R, sim_fn, new_uid, K=25):
     print(f"[INCREMENTAL] Computing neighbors for NEW user {new_uid}")
     # This is single user, no need for parallel

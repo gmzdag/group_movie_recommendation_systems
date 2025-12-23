@@ -1,0 +1,30 @@
+# Environment files with real secrets
+.env
+.env.local
+.env.production
+
+# Config files with secrets
+config.json
+secrets.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Dependencies
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log

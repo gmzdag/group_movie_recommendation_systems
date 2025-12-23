@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import ndcg_score
 from sklearn.metrics.pairwise import cosine_similarity
-from src.recommender.data_loader import load_ratings, load_movies, build_cf_matrix
+from src.recommender.data_loader import load_movies, build_cf_matrix, load_train_valid_test_splits
 from src.recommender.IBCF.item_based_cf import ItemBasedCF
 from src.recommender.CBF.content_based import ContentBasedModel
 from src.recommender.IBCF.neighbors_item import compute_item_neighbors
@@ -118,17 +118,16 @@ def normalize_zscore(mat):
     return mat.sub(mean, axis=0).div(std, axis=0).fillna(0)
 
 def main():
-    # 1. Load data
-    print("Loading Data...")
+    # 1. Load fixed splits
+    print("Loading Fixed Splits...")
+    train_df, valid_df, test_df = load_train_valid_test_splits()
     movies = load_movies()
-    ratings = load_ratings()
     
-    # 2. Split
-    # Sample 20% for testing 
-    test_df = ratings.sample(frac=0.2, random_state=42)
-    train_df = ratings.drop(test_df.index)
+    print(f"Train: {len(train_df)}, Valid: {len(valid_df)}, Test: {len(test_df)}")
     
-    print(f"Train: {len(train_df)}, Test: {len(test_df)}")
+    # Note: We use VALIDATION set for C optimization (hyperparameter tuning)
+    # Test set should be reserved for final evaluation
+    eval_df = valid_df
     
     # 3. Setup Models
     
@@ -150,9 +149,9 @@ def main():
     print("Building Content-Based Model...")
     cb = ContentBasedModel(movies, train_df)
     
-    # 4. Evaluate C
+    # 4. Evaluate C on Validation Set
     c_candidates = [0, 1, 2, 5, 10, 15, 20, 30, 50, 100]
-    scores = evaluate_c(test_df, ibcf, cb, c_candidates)
+    scores = evaluate_c(eval_df, ibcf, cb, c_candidates)
     
     print("\n--- Results (NDCG) ---")
     best_c = None

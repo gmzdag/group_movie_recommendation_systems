@@ -32,16 +32,18 @@ class ContentBasedModel:
         self.movies_df = movies_df.copy()
         self.ratings_df = ratings_df.copy()
 
-        # Default Weights
+        # Optimal Weights (from Bayesian Optimization - 50 iterations)
+        # Best Result: NDCG@10 = 0.7155, Precision@10 = 0.1000
+        # Configuration: High emphasis on genres & countries, moderate on actors & year
         self.weights = weights if weights else {
-            'genres': 2,
-            'director': 2,
-            'keywords': 2,
-            'actors': 1,
-            'year': 1,
-            'overview': 1,
-            'companies': 0, # Default to 0 (disabled) to match previous baseline unless specified
-            'countries': 0
+            'genres': 3,        # Highest weight - core content signal
+            'director': 1,      # Moderate weight - auteur influence
+            'keywords': 0,      # Disabled - found to be noisy/inconsistent
+            'actors': 2,        # Important - cast chemistry matters
+            'year': 2,          # Important - temporal/era preferences
+            'overview': 1,      # Moderate - plot similarity
+            'companies': 0,     # Disabled - not significant for recommendations
+            'countries': 3      # Highest weight - cultural/language clustering
         }
         print(f"[DEBUG] Using weights: {self.weights}")
         
