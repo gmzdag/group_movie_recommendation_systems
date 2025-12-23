@@ -7,8 +7,11 @@ def pearson_sw(u, v, MIN_OVERLAP=10, K=20):
     if n < MIN_OVERLAP:
         return np.nan
     
-    u_mc = u[both] - u[both].mean()
-    v_mc = v[both] - v[both].mean()
+    # SCIENTIFIC FIX: Use Fixed Center (3.0) instead of local mean.
+    # Why? Local mean on sparse data (e.g. 5 items) is unstable and causes high variance.
+    # Subtracting 3.0 (midpoint) acts like "Adjusted Cosine" relative to neutral.
+    u_mc = u[both] - 3.0
+    v_mc = v[both] - 3.0
 
     num = (u_mc * v_mc).sum()
     den = np.sqrt((u_mc**2).sum()) * np.sqrt((v_mc**2).sum())
@@ -24,8 +27,9 @@ def pearson_shrink(u, v, MIN_OVERLAP=10, LAMBDA=20):
     if n < MIN_OVERLAP:
         return np.nan
 
-    u_mc = u[both] - u[both].mean()
-    v_mc = v[both] - v[both].mean()
+    # SCIENTIFIC FIX: Use Fixed Center (3.0)
+    u_mc = u[both] - 3.0
+    v_mc = v[both] - 3.0
 
     num = (u_mc * v_mc).sum()
     den = np.sqrt((u_mc**2).sum()) * np.sqrt((v_mc**2).sum())

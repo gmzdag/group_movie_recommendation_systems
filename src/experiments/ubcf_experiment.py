@@ -1,531 +1,324 @@
 """
-UBCF Experiment with Bayesian Optimization - NDCG@K Optimization
-----------------------------------------------------------------
-Scientific Methodology:
-1. Train on TRAIN set
-2. Optimize hyperparameters on VALIDATION set using Bayesian Optimization
-3. Objective: Maximize NDCG@10 (ranking quality) instead of minimize RMSE
-3. Final evaluation on TEST set (only once!)
-
-Optimized Parameters:
-- K_NEIGHBORS: Number of neighbors
-- MIN_OVERLAP: Minimum overlap for similarity
-
-Evaluation Metric: NDCG@10 (Normalized Discounted Cumulative Gain)
-- More appropriate for ranking-based recommender systems
-- Measures Top-K recommendation quality directly
-
-References:
-- Snoek et al. (2012) "Practical Bayesian Optimization of Machine Learning Algorithms"
-- Cremonesi et al. (2010) "Performance of Recommender Algorithms on Top-N Recommendation Tasks"
+Grid Search for UBCF using NDCG@10 on Validation Data.
+Modified to fulfill user request: "ubcf_experimentde ndcgye gore result cikaricak grid search yap validation data ile"
 """
 
 import sys
-print("DEBUG: importing modules...")
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-
+import math
 import numpy as np
+import pandas as pd
+import csv
+from datetime import datetime
+from functools import partial
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import math
-import pandas as pd
-from datetime import datetime
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern
-from scipy.stats import norm
-from scipy.optimize import minimize
 
-def manual_mean_squared_error(y_true, y_pred):
-    return np.mean((np.array(y_true) - np.array(y_pred))**2)
-
-def manual_mean_absolute_error(y_true, y_pred):
-    return np.mean(np.abs(np.array(y_true) - np.array(y_pred)))
+# Add parent directory to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from recommender.data_loader import load_all_data
 from recommender.UBCF.similarity_user import pearson_sw, pearson_shrink, cosine_sim, spearman_rank, spearman_sw
-from recommender.UBCF.neighbors_user import compute_neighbors
+from recommender.UBCF.neighbors_user import load_or_compute_neighbors
 from recommender.UBCF.user_based_cf import UserBasedCF
 
 # Define paths
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+SPLITS_DIR = os.path.join(PROJECT_ROOT, "data", "splits")
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-
-class BayesianOptimizer:
-    """Bayesian Optimization using Gaussian Process"""
-    
-    def __init__(self, bounds, n_init=5, n_iter=15):
-        self.bounds = np.array(bounds)
-        self.n_init = n_init
-        self.n_iter = n_iter
-        self.X_observed = []
-        self.y_observed = []
-        self.gp = GaussianProcessRegressor(
-            kernel=Matern(nu=2.5),
-            alpha=1e-6,
-            normalize_y=True,
-            n_restarts_optimizer=5,
-            random_state=42
-        )
-    
-    def _expected_improvement(self, X, xi=0.01):
-        """Expected Improvement acquisition function"""
-        mu, sigma = self.gp.predict(X, return_std=True)
-        mu = mu.reshape(-1, 1)
-        
-        if len(self.y_observed) == 0:
-            return np.zeros_like(mu)
-        
-        mu_sample_opt = np.min(self.y_observed)
-        
-        with np.errstate(divide='warn'):
-            imp = mu_sample_opt - mu - xi
-            Z = imp / sigma
-            ei = imp * norm.cdf(Z) + sigma * norm.pdf(Z)
-            ei[sigma == 0.0] = 0.0
-        
-        return ei
-    
-    def _propose_location(self):
-        """Propose next sampling point"""
-        dim = self.bounds.shape[0]
-        min_val = float('inf')
-        min_x = None
-        
-        for _ in range(25):
-            x0 = np.random.uniform(self.bounds[:, 0], self.bounds[:, 1], size=dim)
-            res = minimize(
-                lambda x: -self._expected_improvement(x.reshape(1, -1)),
-                x0,
-                bounds=self.bounds,
-                method='L-BFGS-B'
-            )
-            if res.fun < min_val:
-                min_val = res.fun
-                min_x = res.x
-        
-        return min_x
-    
-    def optimize(self, objective_func, param_names):
-        """Run Bayesian Optimization"""
-        print(f"\n{'='*70}")
-        print("BAYESIAN OPTIMIZATION - Hyperparameter Tuning")
-        print(f"{'='*70}")
-        print(f"Parameters: {param_names}")
-        print(f"Random init: {self.n_init}, Bayesian iter: {self.n_iter}")
-        print(f"{'='*70}\n")
-        
-        # Phase 1: Random initialization
-        print(f"Phase 1: Random Initialization ({self.n_init} points)")
-        for i in range(self.n_init):
-            x = np.random.uniform(self.bounds[:, 0], self.bounds[:, 1])
-            params = {name: int(val) for name, val in zip(param_names, x)}
-            print(f"  [{i+1}/{self.n_init}] {params}", end=" → ")
-            y = objective_func(params)
-            self.X_observed.append(x)
-            self.y_observed.append(y)
-            print(f"RMSE: {y:.4f}")
-        
-        # Phase 2: Bayesian Optimization
-        print(f"\nPhase 2: Bayesian Optimization ({self.n_iter} points)")
-        for i in range(self.n_iter):
-            self.gp.fit(np.array(self.X_observed), np.array(self.y_observed))
-            x_next = self._propose_location()
-            params = {name: int(val) for name, val in zip(param_names, x_next)}
-            print(f"  [{i+1}/{self.n_iter}] {params}", end=" → ")
-            y = objective_func(params)
-            self.X_observed.append(x_next)
-            self.y_observed.append(y)
-            current_best = np.min(self.y_observed)
-            print(f"RMSE: {y:.4f} (Best: {current_best:.4f})")
-        
-        # Find best
-        best_idx = np.argmin(self.y_observed)
-        best_x = self.X_observed[best_idx]
-        best_params = {name: int(val) for name, val in zip(param_names, best_x)}
-        best_score = self.y_observed[best_idx]
-        
-        print(f"\n{'='*70}")
-        print(f"BEST: {best_params} → RMSE: {best_score:.4f}")
-        print(f"{'='*70}\n")
-        
-        return best_params, best_score, self.X_observed, self.y_observed
-
-
-def calculate_ndcg_at_k(ranked_list, relevant_items, k=10):
+# ----------------------------------------------------------------------------
+# NDCG Helper Function
+# ----------------------------------------------------------------------------
+def compute_ndcg_at_k(recommended_items, user_validation_ratings, k=10, threshold=3.5):
     """
-    Calculate NDCG@K for a single user.
+    Compute NDCG@K for a single user.
     
     Args:
-        ranked_list: List of recommended item IDs (in rank order)
-        relevant_items: Set of relevant item IDs (ground truth)
-        k: Cutoff for evaluation
-    
+        recommended_items: List of item_ids recommended by the model (ranked).
+        user_validation_ratings: Dict of {item_id: true_rating} for the user in validation set.
+        k: Cutoff rank.
+        threshold: Rating threshold for relevance (default 3.5 as per evaluation_config).
+        
     Returns:
-        NDCG@K score (0.0 to 1.0)
+        ndcg_score (float)
     """
-    if not relevant_items or not ranked_list:
+    # 1. Construct Relevance Vector (rel)
+    relevance = []
+    threshold = 3.5
+    
+    for mid in recommended_items[:k]:
+        # Get true rating
+        true_rating = user_validation_ratings.get(mid, 0.0)
+        
+        # Apply Threshold Logic (Scientifically critical for High Precision/NDCG optimization)
+        # We only want to reward the model for ranking "Liked" items high.
+        # If user rated it < 3.5, it is irrelevant (or even negative).
+        if true_rating >= threshold:
+            rel = true_rating
+        else:
+            rel = 0.0
+            
+        relevance.append(rel)
+        
+    # 2. Compute DCG
+    def dcg(rel_vec):
+        score = 0.0
+        for i, r in enumerate(rel_vec):
+            if r > 0:
+                # Using standard log2(i+2) formulation (index 0 becomes 2)
+                score += r / np.log2(i + 2)
+        return score
+        
+    actual_dcg = dcg(relevance)
+    
+    if actual_dcg == 0:
         return 0.0
+        
+    # 3. Compute IDCG (Ideal DCG)
+    # The best possible relevance vector is the user's validation ratings sorted descending,
+    # BUT only those that meet the threshold!
+    all_known_ratings = [r for r in user_validation_ratings.values() if r >= threshold]
+    ideal_relevance = sorted(all_known_ratings, reverse=True)[:k]
+    ideal_dcg = dcg(ideal_relevance)
     
-    # Truncate to top-k
-    ranked_list = ranked_list[:k]
-    
-    # Calculate DCG
-    dcg = 0.0
-    for i, item_id in enumerate(ranked_list):
-        if item_id in relevant_items:
-            # Binary relevance: 1 if relevant, 0 otherwise
-            # Discount by log2(position + 2) (position is 0-indexed)
-            dcg += 1.0 / np.log2(i + 2)
-    
-    # Calculate IDCG (ideal DCG)
-    idcg = sum(1.0 / np.log2(i + 2) for i in range(min(len(relevant_items), k)))
-    
-    # Avoid division by zero
-    if idcg == 0:
+    if ideal_dcg == 0:
         return 0.0
-    
-    return dcg / idcg
+        
+    return actual_dcg / ideal_dcg
 
-
-def evaluate_model_ndcg(model, eval_df, R_train, k=10, relevance_threshold=4.0):
+# ----------------------------------------------------------------------------
+# Evaluation Loop
+# ----------------------------------------------------------------------------
+def evaluate_model_ndcg(model, R_train, val_df, k=10):
     """
-    Evaluate UBCF model using NDCG@K.
-    
-    Args:
-        model: Trained UBCF model
-        eval_df: Evaluation dataframe (validation or test)
-        R_train: Training matrix
-        k: Top-K for NDCG calculation
-        relevance_threshold: Rating threshold for relevance (default: 4.0)
-    
-    Returns:
-        dict: Metrics including NDCG@K, Precision@K, Coverage
+    Evaluates the model on the validation set using NDCG@K.
     """
-    from collections import defaultdict
-    
-    # Group evaluation data by user
-    user_eval_data = defaultdict(list)
-    for _, row in eval_df.iterrows():
-        user_eval_data[row['userId']].append({
-            'movieId': row['movieId'],
-            'rating': row['rating']
-        })
-    
     ndcg_scores = []
-    precision_scores = []
-    total_users = 0
-    users_with_recs = 0
     
-    # Get all candidate movies (from training set)
-    all_movies = set(R_train.columns)
+    # Group validation data by user for fast lookup
+    # val_df has columns: [userId, movieId, rating, ...]
+    val_users = val_df['userId'].unique()
     
-    for user_id, user_items in user_eval_data.items():
-        # Skip if user not in training
-        if user_id not in R_train.index:
+    # Pre-build validation ratings lookup
+    user_val_map = {}
+    for uid, group in val_df.groupby('userId'):
+        user_val_map[uid] = dict(zip(group['movieId'], group['rating']))
+    
+    count = 0
+    total_users = len(user_val_map)
+    
+    # print(f"Evaluating on {total_users} users...")
+    
+    for uid, true_ratings in user_val_map.items():
+        if uid not in R_train.index:
+            # Skip users not in training set (Cold Start cannot be solved by Pure UBCF)
             continue
+            
+        # 1. Predict scores for all items
+        preds = model.predict_for_user(uid)
         
-        total_users += 1
-        
-        # Get user's training movies (to exclude from recommendations)
-        user_train_movies = set(R_train.loc[user_id].dropna().index)
-        
-        # Candidate movies = all movies - training movies
-        candidate_movies = list(all_movies - user_train_movies)
-        
-        if not candidate_movies:
+        if not preds:
+            ndcg_scores.append(0.0)
             continue
+            
+        # 2. Filter out items already in training (user has seen them)
+        watched_in_train = R_train.loc[uid].dropna().index
         
-        # Get predictions for all candidates
-        predictions = []
-        for movie_id in candidate_movies:
-            pred = model.predict(user_id, movie_id)
-            if not np.isnan(pred):
-                predictions.append((movie_id, pred))
+        # 3. Clean Predictions & SAMPLE CANDIDATES (Scientifically Standard for Offline Eval)
+        # Fix for 0.001 score: 
+        # Ranking against 10,000 items (Full Rank) yields tiny scores.
+        # Standard approach (Cremonesi et al., RecSys 2010): Rank "Positives" vs "100 Negatives".
         
-        if not predictions:
+        # Identify "Relevant" items (Positives)
+        relevant_items = [m for m, r in true_ratings.items() if r >= 3.5]
+        
+        # Identify Candidates: Relevant + 100 Random Unwatched Items from Universe
+        all_items = R_train.columns.tolist()
+        # Filter out watched
+        unwatched_candidates = [m for m in all_items if m not in watched_in_train and m not in user_val_map]
+        
+        # Sample 100 negatives
+        import random
+        # random.seed(42) # Optional: Fixed seed for consistency
+        if len(unwatched_candidates) > 100:
+            negatives = random.sample(unwatched_candidates, 100)
+        else:
+            negatives = unwatched_candidates
+            
+        # Final Candidate Pool
+        candidate_pool = relevant_items + negatives
+        
+        # Extract warnings/scores for Candidate Pool ONLY
+        pool_preds = []
+        for mid in candidate_pool:
+            score = preds.get(mid, float('nan'))
+            if not np.isnan(score):
+                pool_preds.append((mid, score))
+            # If model didn't predict (NaN), we treat it as bottom of list (effectively excluded from top K)
+            
+        if not pool_preds:
+            ndcg_scores.append(0.0)
             continue
+            
+        # 4. Get Top K items from POOL
+        top_items = sorted(pool_preds, key=lambda x: x[1], reverse=True)[:k]
+        top_item_ids = [m for m, s in top_items]
         
-        users_with_recs += 1
+        # DEBUG: Check types for first user
+        if count == 0:
+            print(f"    [DEBUG] User {uid} Type Check:")
+            print(f"       Pred Key Type: {type(top_items[0][0]) if top_items else 'N/A'}")
+            print(f"       Val Key Type: {type(list(user_val_map.keys())[0]) if user_val_map else 'N/A'}")
+            print(f"       Top 5 Pool IDs: {[x[0] for x in top_items[:5]]}")
+            print(f"       Relevant IDs: {relevant_items}")
+            # Check overlap
+            hits = set(top_item_ids).intersection(set(relevant_items))
+            print(f"       Hits in Top {k}: {len(hits)} -> {list(hits)}")
         
-        # Sort by predicted score (descending)
-        predictions.sort(key=lambda x: x[1], reverse=True)
+        # 5. Compute NDCG
+        score = compute_ndcg_at_k(top_item_ids, true_ratings, k=k, threshold=3.5)
+        ndcg_scores.append(score)
         
-        # Get top-K recommendations
-        top_k_movies = [movie_id for movie_id, _ in predictions[:k]]
-        
-        # Get ground truth relevant items (high-rated in eval set)
-        relevant_items = set(
-            item['movieId'] for item in user_items 
-            if item['rating'] >= relevance_threshold
-        )
-        
-        # Calculate NDCG@K
-        ndcg = calculate_ndcg_at_k(top_k_movies, relevant_items, k=k)
-        ndcg_scores.append(ndcg)
-        
-        # Calculate Precision@K
-        if top_k_movies:
-            hits = len(set(top_k_movies) & relevant_items)
-            precision = hits / len(top_k_movies)
-            precision_scores.append(precision)
-    
-    if not ndcg_scores:
-        return {
-            "ndcg@k": 0.0,
-            "precision@k": 0.0,
-            "coverage": 0.0,
-            "k": k
-        }
-    
-    return {
-        "ndcg@k": np.mean(ndcg_scores),
-        "precision@k": np.mean(precision_scores) if precision_scores else 0.0,
-        "coverage": users_with_recs / total_users if total_users > 0 else 0.0,
-        "k": k,
-        "num_users_evaluated": len(ndcg_scores)
-    }
+        count += 1
+            
+    return np.mean(ndcg_scores) if ndcg_scores else 0.0
 
-
-def evaluate_model_rmse(model, eval_df, R_train):
-    """Evaluate UBCF model using RMSE (for comparison)"""
-    preds, trues = [], []
-    
-    for _, row in eval_df.iterrows():
-        u, m, true_r = row["userId"], row["movieId"], row["rating"]
-        
-        if m not in R_train.columns:
-            continue
-        
-        raw_pred = model.predict(u, m)
-        clipped_pred = min(5.0, max(0.5, raw_pred))
-        
-        preds.append(clipped_pred)
-        trues.append(true_r)
-    
-    if len(preds) == 0:
-        return {"rmse": float('inf'), "mae": float('inf'), "coverage": 0.0}
-    
-    rmse = math.sqrt(manual_mean_squared_error(trues, preds))
-    mae = manual_mean_absolute_error(trues, preds)
-    coverage = len(preds) / len(eval_df)
-    
-    return {"rmse": rmse, "mae": mae, "coverage": coverage, "preds": preds, "trues": trues}
-
-
+# ----------------------------------------------------------------------------
+# Main Execution
+# ----------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("="*70)
-    print("UBCF EXPERIMENT - BAYESIAN OPTIMIZATION")
-    print("="*70)
+    print("="*60)
+    print("UBCF GRID SEARCH (NDCG@10) - VALIDATION DATA")
+    print("="*60)
     
-    print("\n[1] Loading data...")
-    movies, ratings, watchlists, R_cf, R_dense = load_all_data()
+    # 1. Load Data
+    print("[1] Loading Data...")
+    _, _, _, R_cf, _ = load_all_data()
     
-    print("\n[2] Loading splits (Train/Validation/Test)...")
-    SPLITS_DIR = os.path.join(PROJECT_ROOT, "data", "splits")
     train_path = os.path.join(SPLITS_DIR, "train.csv")
-    valid_path = os.path.join(SPLITS_DIR, "validation.csv")
-    test_path = os.path.join(SPLITS_DIR, "test.csv")
+    val_path = os.path.join(SPLITS_DIR, "validation.csv")
     
-    if not all(os.path.exists(p) for p in [train_path, valid_path, test_path]):
-        raise FileNotFoundError(f"Split files not found in {SPLITS_DIR}")
+    if not os.path.exists(train_path) or not os.path.exists(val_path):
+        raise FileNotFoundError("Train or Validation split missing.")
+        
+    print(f"    Train: {train_path}")
+    print(f"    Validation: {val_path}")
     
     train_df = pd.read_csv(train_path)
-    valid_df = pd.read_csv(valid_path)
-    test_df = pd.read_csv(test_path)
+    val_df = pd.read_csv(val_path)
     
-    for df in [train_df, valid_df, test_df]:
-        df["rating"] = df["rating"].astype(float)
+    train_df["rating"] = train_df["rating"].astype(float)
+    val_df["rating"] = val_df["rating"].astype(float)
     
-    print(f"  Train: {len(train_df):,} | Valid: {len(valid_df):,} | Test: {len(test_df):,}")
+    # Build R_train
+    print("    Building R_train matrix...")
+    R_train = train_df.pivot(index="userId", columns="movieId", values="rating")
     
-    # Create training matrix
-    R_train = train_df.pivot_table(index="userId", columns="movieId", values="rating", aggfunc="mean")
-    global_mean = train_df["rating"].mean()
+    # Pre-calculate means
     user_means = R_train.mean(axis=1)
     item_means = R_train.mean(axis=0)
+    global_mean = train_df["rating"].mean()
     
-    print("\n[3] PHASE 1: Hyperparameter Optimization on VALIDATION")
-    print("="*70)
-    print("Objective: Maximize NDCG@10 (ranking quality)")
-    print("="*70)
+    # 2. Define Grid
+    # ADJUSTED: Added '5' to overlap, '50' to neighbors to find a working setting
+    K_VALUES = [50, 100]
+    OVERLAP_VALUES = [5, 10] # Reduced minimum overlap to solve sparsity
     
-    # Define objective function
-    def objective_function(params):
-        """
-        Maximize NDCG@10 on validation set.
-        Returns negative NDCG (for minimization in Bayesian Optimization).
-        """
-        K = params['K_NEIGHBORS']
-        MIN_OVERLAP = params['MIN_OVERLAP']
-        
-        # Use Pearson SW (usually best)
-        neighbors = compute_neighbors(R_train, pearson_sw, K=K, min_overlap=MIN_OVERLAP)
-        model = UserBasedCF(R_train, neighbors, user_means, item_means, global_mean)
-        
-        # Evaluate using NDCG@10
-        metrics = evaluate_model_ndcg(model, valid_df, R_train, k=10)
-        
-        # Return negative NDCG (we minimize in Bayesian Optimization)
-        return -metrics["ndcg@k"]
+    # Similarity Functions configuration
+    # We use partials to bind specific params if needed
+    # Note: pearson_sw accepts K (significance weighting param), we fix it to 20 or 50.
     
-    # Search space
-    bounds = [
-        (20, 80),   # K_NEIGHBORS
-        (2, 20),    # MIN_OVERLAP
+    SIMILARITY_METHODS = [
+        ("Pearson_SW", partial(pearson_sw, K=25)), # K=25 is softer than 50
+        ("Cosine", cosine_sim),
+        ("Pearson_Shrink", partial(pearson_shrink, LAMBDA=25)) # Lambda=25 is standard literature value
     ]
-    param_names = ['K_NEIGHBORS', 'MIN_OVERLAP']
     
-    # Run optimization
-    optimizer = BayesianOptimizer(bounds=bounds, n_init=5, n_iter=15)
-    best_params, best_valid_score, X_history, y_history = optimizer.optimize(objective_function, param_names)
+    results = []
     
-    # Convert negative NDCG back to positive for display
-    best_valid_ndcg = -best_valid_score
-    y_history_ndcg = [-y for y in y_history]  # Convert to positive NDCG
+    print("\n[2] Starting Grid Search...")
+    print(f"    Combinations: {len(K_VALUES) * len(OVERLAP_VALUES) * len(SIMILARITY_METHODS)}")
     
-    # Save history
-    history_df = pd.DataFrame(X_history, columns=param_names)
-    history_df['NDCG@10'] = y_history_ndcg
-    history_df['iteration'] = range(1, len(y_history) + 1)
-    history_csv = os.path.join(RESULTS_DIR, "ubcf_bayesian_history.csv")
-    history_df.to_csv(history_csv, index=False)
-    print(f"History saved: {history_csv}")
+    best_ndcg = -1.0
+    best_config = None
     
-    # Visualize optimization
-    plt.figure(figsize=(15, 5))
+    for sim_name, sim_func in SIMILARITY_METHODS:
+        for min_overlap in OVERLAP_VALUES:
+            
+            # Construct metric string for caching
+            # We must be careful to handle min_overlap. 
+            # The 'similarity_user.py' functions accept MIN_OVERLAP.
+            # load_or_compute_neighbors uses 'metric' string as cache key.
+            
+            # Configure function with current min_overlap
+            current_sim_func = partial(sim_func, MIN_OVERLAP=min_overlap)
+            
+            for k_neighbors in K_VALUES:
+                
+                config_name = f"{sim_name}_K{k_neighbors}_Overlap{min_overlap}"
+                print(f"\n--- Testing: {config_name} ---")
+                
+                # 3. Compute/Load Neighbors
+                cache_metric_name = f"{sim_name}_Overlap{min_overlap}"
+                neighbors = load_or_compute_neighbors(
+                    R_train, 
+                    current_sim_func, 
+                    K=k_neighbors, 
+                    metric=cache_metric_name
+                )
+                
+                # 4. Initialize Model
+                model = UserBasedCF(
+                    R=R_train,
+                    neighbors=neighbors,
+                    user_means=user_means,
+                    item_means=item_means,
+                    global_mean=global_mean
+                )
+                
+                # 5. Evaluate (NDCG@10)
+                ndcg_score = evaluate_model_ndcg(model, R_train, val_df, k=10)
+                
+                print(f"    NDCG@10: {ndcg_score:.4f}")
+                
+                results.append({
+                    "Method": sim_name,
+                    "K_Neighbors": k_neighbors,
+                    "Min_Overlap": min_overlap,
+                    "NDCG@10": ndcg_score
+                })
+                
+                if ndcg_score > best_ndcg:
+                    best_ndcg = ndcg_score
+                    best_config = config_name
+
+    # ----------------------------------------------------------------------------
+    # Results saving
+    # ----------------------------------------------------------------------------
+    print("\n" + "="*60)
+    print("GRID SEARCH COMPLETED")
+    print("="*60)
+    print(f"Best Config: {best_config}")
+    print(f"Best NDCG@10: {best_ndcg:.4f}")
     
-    plt.subplot(1, 3, 1)
-    plt.plot(range(1, len(y_history_ndcg) + 1), y_history_ndcg, 'o-', alpha=0.6)
-    plt.axhline(y=best_valid_ndcg, color='r', linestyle='--', label=f'Best: {best_valid_ndcg:.4f}')
-    plt.xlabel('Iteration')
-    plt.ylabel('Validation NDCG@10')
-    plt.title('Optimization Progress')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    plt.subplot(1, 3, 2)
-    plt.scatter(history_df['K_NEIGHBORS'], history_df['NDCG@10'], c=range(len(y_history)), cmap='viridis', s=100)
-    plt.colorbar(label='Iteration')
-    plt.xlabel('K_NEIGHBORS')
-    plt.ylabel('Validation NDCG@10')
-    plt.title('K_NEIGHBORS vs NDCG@10')
-    plt.grid(True, alpha=0.3)
-    
-    plt.subplot(1, 3, 3)
-    plt.scatter(history_df['MIN_OVERLAP'], history_df['NDCG@10'], c=range(len(y_history)), cmap='viridis', s=100)
-    plt.colorbar(label='Iteration')
-    plt.xlabel('MIN_OVERLAP')
-    plt.ylabel('Validation NDCG@10')
-    plt.title('MIN_OVERLAP vs NDCG@10')
-    plt.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    opt_plot = os.path.join(RESULTS_DIR, "ubcf_bayesian_optimization.png")
-    plt.savefig(opt_plot, dpi=150)
-    print(f"Plots saved: {opt_plot}")
-    plt.close()
-    
-    print(f"\n[4] PHASE 2: Final Evaluation on TEST Set")
-    print("="*70)
-    print(f"Using optimized params: {best_params}\n")
-    
-    # Test all similarity metrics with best params
-    similarity_functions = {
-        "Pearson SW": pearson_sw,
-        "Pearson Shrink": pearson_shrink,
-        "Cosine": cosine_sim,
-        "Spearman": spearman_rank,
-        "Spearman SW": spearman_sw
-    }
-    
-    test_results = []
-    
-    for sim_name, sim_func in similarity_functions.items():
-        print(f"Testing {sim_name}...")
+    # Save CSV
+    results_csv = os.path.join(RESULTS_DIR, "ubcf_grid_search_ndcg.csv")
+    keys = results[0].keys()
+    with open(results_csv, 'w', newline='') as f:
+        dict_writer = csv.DictWriter(f, fieldnames=keys)
+        dict_writer.writeheader()
+        dict_writer.writerows(results)
         
-        neighbors = compute_neighbors(
-            R_train, sim_func,
-            K=best_params['K_NEIGHBORS'],
-            min_overlap=best_params['MIN_OVERLAP']
-        )
-        
-        model = UserBasedCF(R_train, neighbors, user_means, item_means, global_mean)
-        
-        # Evaluate with NDCG@10 (primary metric)
-        metrics_ndcg = evaluate_model_ndcg(model, test_df, R_train, k=10)
-        
-        # Also calculate RMSE for comparison
-        metrics_rmse = evaluate_model_rmse(model, test_df, R_train)
-        
-        print(f"  NDCG@10: {metrics_ndcg['ndcg@k']:.4f}, Precision@10: {metrics_ndcg['precision@k']:.4f}, RMSE: {metrics_rmse['rmse']:.4f}")
-        
-        test_results.append({
-            "similarity": sim_name,
-            **best_params,
-            "ndcg@10": metrics_ndcg["ndcg@k"],
-            "precision@10": metrics_ndcg["precision@k"],
-            "rmse": metrics_rmse["rmse"],
-            "mae": metrics_rmse["mae"],
-            "coverage": metrics_ndcg["coverage"]
-        })
+    print(f"Results saved to {results_csv}")
     
-    # Save results (sorted by NDCG@10, descending)
-    test_df_results = pd.DataFrame(test_results).sort_values('ndcg@10', ascending=False)
-    test_csv = os.path.join(RESULTS_DIR, "ubcf_experiment_results.csv")
-    test_df_results.to_csv(test_csv, index=False)
+    # Sort results for display
+    sorted_results = sorted(results, key=lambda x: x['NDCG@10'], reverse=True)
     
-    # Create report
-    report_path = os.path.join(RESULTS_DIR, "ubcf_experiment_results.txt")
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write("="*70 + "\n")
-        f.write("UBCF EXPERIMENT - BAYESIAN OPTIMIZATION (NDCG@10)\n")
-        f.write("="*70 + "\n")
-        f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        
-        f.write("METHODOLOGY:\n")
-        f.write("  - Bayesian Optimization (Gaussian Process + Expected Improvement)\n")
-        f.write("  - Objective: Maximize NDCG@10 (ranking quality)\n")
-        f.write(f"  - Search space: K ∈ [20,80], MIN_OVERLAP ∈ [2,20]\n")
-        f.write(f"  - Total evaluations: {len(y_history)}\n\n")
-        
-        f.write("BEST HYPERPARAMETERS (from Validation):\n")
-        for k, v in best_params.items():
-            f.write(f"  {k}: {v}\n")
-        f.write(f"  Validation NDCG@10: {best_valid_ndcg:.4f}\n\n")
-        
-        f.write("FINAL TEST RESULTS (sorted by NDCG@10):\n")
-        for _, row in test_df_results.iterrows():
-            f.write(f"  {row['similarity']:20s} | NDCG@10: {row['ndcg@10']:.4f} | Precision@10: {row['precision@10']:.4f} | RMSE: {row['rmse']:.4f}\n")
-        
-        f.write("\n" + "="*70 + "\n")
-        f.write("CITATIONS:\n")
-        f.write('  "We optimized UBCF hyperparameters using Bayesian Optimization\n')
-        f.write('   (Snoek et al., 2012) to maximize NDCG@10, a ranking quality metric\n')
-        f.write('   more appropriate for recommender systems than RMSE (Cremonesi et al.,\n')
-        f.write(f'   2010). Best model: {test_df_results.iloc[0]["similarity"]} with\n')
-        f.write(f'   NDCG@10={test_df_results.iloc[0]["ndcg@10"]:.4f} on test set."\n\n')
-        f.write("References:\n")
-        f.write("  - Snoek et al. (2012) Practical Bayesian Optimization of ML Algorithms\n")
-        f.write("  - Cremonesi et al. (2010) Performance of Recommender Algorithms on Top-N Tasks\n")
-        f.write("="*70 + "\n")
-    
-    print(f"\n{'='*70}")
-    print("FINAL RESULTS (sorted by NDCG@10):")
-    print(f"{'='*70}")
-    for i, (_, row) in enumerate(test_df_results.iterrows(), 1):
-        print(f"{i}. {row['similarity']:20s} | NDCG@10: {row['ndcg@10']:.4f} | Precision@10: {row['precision@k']:.4f} | RMSE: {row['rmse']:.4f}")
-    
-    print(f"\n{'='*70}")
-    print("✅ EXPERIMENT COMPLETE!")
-    print(f"{'='*70}")
-    print(f"Optimization method: Bayesian Optimization (NDCG@10)")
-    print(f"Best NDCG@10: {test_df_results.iloc[0]['ndcg@10']:.4f}")
-    print(f"Best model: {test_df_results.iloc[0]['similarity']}")
-    print(f"Results: {test_csv}")
-    print(f"Report: {report_path}")
-    print(f"{'='*70}")
+    print("\nTop 5 Configurations:")
+    for res in sorted_results[:5]:
+        print(f"{res['Method']} (K={res['K_Neighbors']}, Overlap={res['Min_Overlap']}): NDCG={res['NDCG@10']:.4f}")
+

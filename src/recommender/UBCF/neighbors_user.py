@@ -19,13 +19,38 @@ def compute_neighbors_for_user(R, sim_fn, uid, K=25):
 
     return dict(sorted(sims.items(), key=lambda x: x[1], reverse=True)[:K])
 
-def _worker(uid, R, sim_fn, K):
+# Global variables for worker processes
+_worker_R = None
+_worker_sim_fn = None
+_worker_K = None
+
+
+def _init_worker(R, sim_fn, K):
+    global _worker_R, _worker_sim_fn, _worker_K
+    _worker_R = R
+    _worker_sim_fn = sim_fn
+    _worker_K = K
+    # Signal that worker is ready (helpful for debugging "hanging")
+    # print(f"[WORKER] Process {os.getpid()} initialized with {len(R)} users.")
+
+def _worker_task(uids):
     """
-    Worker function for parallel processing.
-    Needs to handle the fact that R (DataFrame) might be large to pickle, 
-    but for this scale it might be okay or relies on copy-on-write.
+    Worker task that processes a BATCH of users.
+    Processing a batch (list of uids) reduces the overhead of pickling/unpickling 
+    results and task management compared to one-by-one.
     """
-    return uid, compute_neighbors_for_user(R, sim_fn, uid, K)
+    results = {}
+    # Access globals
+    target_R = _worker_R
+    sim = _worker_sim_fn
+    k_val = _worker_K
+    
+    for uid in uids:
+        # Inline the compute_neighbors_for_user logic or call it
+        # Calling it is cleaner; overhead is function call (negligible compared to logic)
+        results[uid] = compute_neighbors_for_user(target_R, sim, uid, k_val)
+        
+    return results
 
 def precompute_all_user_neighbors(R, sim_fn, K=25):
     users = list(R.index)
@@ -46,21 +71,28 @@ def precompute_all_user_neighbors(R, sim_fn, K=25):
         return neighbors
 
     # Determine chunksize and pool size
-    num_processes = min(cpu_count(), 8) # Cap at 8 to be safe
-    print(f"[PARALLEL] Computing neighbors with {num_processes} processes...")
+    num_processes = min(cpu_count(), 8) # Cap at 8
+    print(f"[PARALLEL] Computing neighbors w/ {num_processes} CPUs (Batch Mode)...")
     
-    func = partial(_worker, R=R, sim_fn=sim_fn, K=K)
+    # Create batches of users manually to reduce IPC calls
+    # A batch size of ~50-100 is usually good for this kind of work
+    batch_size = 50
+    user_batches = [users[i:i + batch_size] for i in range(0, len(users), batch_size)]
+    total_batches = len(user_batches)
     
-    with Pool(processes=num_processes) as pool:
-        # Use imap_unordered to track progress
-        results_iter = pool.imap_unordered(func, users, chunksize=10)
+    with Pool(processes=num_processes, initializer=_init_worker, initargs=(R, sim_fn, K)) as pool:
+        # Map over batches
+        minibatch_iter = pool.imap_unordered(_worker_task, user_batches)
         
-        for idx, result in enumerate(results_iter):
-            uid, neigh = result
-            neighbors[uid] = neigh
+        users_processed = 0
+        for batch_result in minibatch_iter:
+            # batch_result is a dict {uid: neighbors}
+            neighbors.update(batch_result)
+            users_processed += len(batch_result)
             
-            if (idx + 1) % 100 == 0 or (idx + 1) == total:
-                print(f"[PARALLEL] Computed {idx + 1}/{total} users ({((idx+1)/total)*100:.1f}%)")
+            # Print status
+            if users_processed % 100 < batch_size or users_processed == total: # approx check
+                 print(f"[PARALLEL] Processed {users_processed}/{total} users ({users_processed/total*100:.1f}%)")
     
     print(f"[DONE] neighbors computed in {time.time()-start:.1f}s")
     return neighbors

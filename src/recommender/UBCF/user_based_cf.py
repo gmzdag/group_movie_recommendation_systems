@@ -73,6 +73,76 @@ class UserBasedCF:
         
         return target_mean + (num / den)
 
+    def predict_for_user(self, user_id, item_subset=None):
+        """
+        Vectorized prediction for one user on multiple items.
+        Faster than calling predict() iteratively.
+        """
+        if user_id not in self.neighbors:
+             return {}
+             
+        # Neighbors map: {neighbor_id: sim_score}
+        n_map = self.neighbors[user_id]
+        if not n_map:
+            return {}
+            
+        n_ids = list(n_map.keys())
+        sims = np.array(list(n_map.values()))
+        
+        # Get dense block for neighbors (Neighbors x AllItems)
+        # Using self.R (pd.DataFrame). 
+        # Slicing row-wise ok for typical frame.
+        
+        # If item_subset is provided, we filter columns.
+        if item_subset is not None:
+             # Filter items that exist in columns
+             valid_items = [i for i in item_subset if i in self.R.columns]
+             if not valid_items:
+                 return {}
+             n_ratings = self.R.loc[n_ids, valid_items].values # Shape: (K, M)
+             items = valid_items
+        else:
+             n_ratings = self.R.loc[n_ids].values
+             items = self.R.columns
+             
+        # Calculate deviations (r_v - mean_v)
+        # mean_v shape: (K,)
+        n_means = self.user_means.loc[n_ids].values[:, None] # (K, 1) to broadcast
+        
+        # Deviations (n_ratings has NaNs)
+        deviations = n_ratings - n_means
+        
+        # Weighted Sum
+        # sims shape: (K,)
+        # score = sum(sim * dev) / sum(|sim|) ignoring NaNs
+        
+        # Weighted deviations: Broadcast sim to each column
+        weighted_devs = sims[:, None] * deviations # Shape (K, M)
+        
+        # Numerator: Sum ignoring NaNs
+        num = np.nansum(weighted_devs, axis=0) # Shape (M,)
+        
+        # Denominator: Sum of abs(sim) ONLY for rows where rating was present
+        present_mask = ~np.isnan(n_ratings)
+        abs_sims = np.abs(sims)[:, None] # (K, 1)
+        den = np.sum(abs_sims * present_mask, axis=0) # Shape (M,)
+        
+        # Scores
+        # Avoid div by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+             pred_devs = num / den
+             
+        # Add user mean
+        u_mean = self.user_means.get(user_id, self.global_mean)
+        preds = u_mean + pred_devs
+        
+        # Handle cases where den == 0 (no neighbors rated the item) -> use baseline or NaN
+        # Standard fallback if no neighbors rated: Baseline? Or Global Mean?
+        # Here we leave as NaN, filtered out later or filled. 
+        # UBCF usually cannot predict if neighbors didn't see.
+        
+        return dict(zip(items, preds))
+
     def recommend(self, user_id, top_n=10):
         """
         Recommend top_n movies for a single user.
