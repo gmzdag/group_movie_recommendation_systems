@@ -26,6 +26,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import ndcg_score
 from sklearn.metrics.pairwise import cosine_similarity
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+
 from src.recommender.data_loader import build_cf_matrix, load_train_valid_test_splits
 
 plt.style.use('seaborn-v0_8-paper')
@@ -44,58 +47,101 @@ NEGATIVE_SAMPLES = 100
 RANDOM_SEED = 42
 
 def normalize_mean_center(mat):
-    return mat.sub(mat.mean(axis=1), axis=0).fillna(0)
+    # SCIENTIFIC FIX: Do NOT fillna(0) yet. Keep NaNs for correct correlation.
+    return mat.sub(mat.mean(axis=1), axis=0)
 
 def normalize_zscore(mat):
     mean = mat.mean(axis=1)
-    std = mat.std(axis=1).replace(0, 1) 
-    return mat.sub(mean, axis=0).div(std, axis=0).fillna(0)
+    std = mat.std(axis=1)
+    
+    # SCIENTIFIC FIX: Users with 0 std dev cannot be normalized (z-score undefined).
+    # Setting std to 1 implies variance exists where there is none.
+    # We set them to NaN to exclude from calculation, or keep as NaN.
+    # We use replace(0, np.nan) to ensure we don't divide by zero.
+    std = std.replace(0, np.nan)
+    
+    return mat.sub(mean, axis=0).div(std, axis=0)
 
 normalizers = {
     "mean_center": normalize_mean_center,
     "zscore": normalize_zscore
 }
 
-def calculate_similarity(train_df, norm_method, sim_method):
+def calculate_similarity(train_df, norm_method, sim_method, min_ratings=5):
+    # 1. Build Matrix with NaNs (Sparse)
     raw_um = build_cf_matrix(train_df)
+    
+    # 2. Normalize (User-Based handling of Bias) - Preserving NaNs
     norm_um = normalizers[norm_method](raw_um)
     
+    # 3. Compute Item Similarity
     if sim_method == "cosine":
+        # Cosine requires 0-filled for dot product, BUT we must be careful.
+        # Adjusted Cosine: We want Cosine on the adjusted vectors.
+        # Filling NaNs with 0 here is strictly correct for "Adjusted Cosine" 
+        # because 0 implies "Average Rating" after centering.
+        norm_um_filled = norm_um.fillna(0)
         item_sim = pd.DataFrame(
-            cosine_similarity(norm_um.T),
+            cosine_similarity(norm_um_filled.T),
             index=norm_um.columns,
             columns=norm_um.columns
         )
     elif sim_method == "pearson":
-        # FIX: Pearson correlation using pairwise complete observations
-        # Avoids bias from zero-filled missing values; uses mean-centered data
-        item_sim = norm_um.T.corr(method="pearson").fillna(0)
+        # SCIENTIFIC FIX: Pearson strictly requires NaNs to ignore missing pairs.
+        # We MUST NOT fillna(0) here. 
+        # Also added min_periods to avoid spurious correlations (Variance Collapse).
+        # FIX: Compute correlation on columns (Items), not rows (Users). removed .T
+        item_sim = norm_um.corr(method="pearson", min_periods=min_ratings).fillna(0)
     else:
         raise ValueError(f"Unknown similarity: {sim_method}")
         
-    return raw_um, norm_um, item_sim
+    # Final cleanup: fill diagonal with 0
+    np.fill_diagonal(item_sim.values, 0)
+        
+    # Return raw_um (with NaNs) for prediction checks, norm_um (filled) for vector ops
+    return raw_um, norm_um.fillna(0), item_sim
 
-def predict_rating_item_based(user_vector, item_vector, movie_id, n_neighbors, sim_method="cosine"):
-    valid_items = user_vector.index[user_vector != 0] 
-    if movie_id in valid_items:
-        valid_items = valid_items.drop(movie_id)
+def predict_rating_item_based(user_normalized_vector, item_vector, movie_id, n_neighbors, rated_items, sim_method="cosine"):
+    """
+    Predicts rating using Item-Based CF logic.
+    SCIENTIFIC FIX: Explicitly passes 'rated_items' logic.
+    Previously, checking (user_vector != 0) caused ratings equal to the mean (normalized to 0) to be ignored.
+    Now, even if normalized rating is 0.0, it is included in the weighted sum if it exists in rated_items.
+    """
+    # 1. Intersection: Items user rated AND that have similarity with target movie
+    # valid_items are neighbors (j) that user has rated (r_uj exists)
+    valid_items = [item for item in rated_items if item != movie_id and item in item_vector.index]
         
     if len(valid_items) == 0:
         return np.nan 
         
+    # Vector of similarities between target(i) and neighbors(j)
     sims = item_vector.loc[valid_items]
+    
+    # Vector of user's normalized ratings for neighbors(j)
+    # Note: Values can be 0.0 (if rating == mean), this is valid information.
+    user_ratings_for_sims = user_normalized_vector.loc[valid_items]
     
     # FIX: For Pearson, select neighbors by absolute similarity magnitude
     # Strong negative correlations are as informative as positive ones
     if sim_method == "pearson":
-        top_k_sims = sims.reindex(sims.abs().nlargest(n_neighbors).index)
+        # Sort by absolute value, take top K
+        top_k_indices = sims.abs().nlargest(n_neighbors).index
+        top_k_sims = sims.loc[top_k_indices]
+        top_k_ratings = user_ratings_for_sims.loc[top_k_indices]
     else:
-        top_k_sims = sims.nlargest(n_neighbors)
+        # Sort by actual value (Cosine), take top K
+        top_k_indices = sims.nlargest(n_neighbors).index
+        top_k_sims = sims.loc[top_k_indices]
+        top_k_ratings = user_ratings_for_sims.loc[top_k_indices]
     
-    if top_k_sims.sum() == 0:
+    # SCIENTIFIC FIX: For Pearson, sum can be 0 due to +/- cancellation, but info exists
+    # Check if ALL similarities are actually zero (magnitude check)
+    if np.allclose(top_k_sims.abs().values, 0) or top_k_sims.abs().sum() == 0:
         return np.nan
         
-    numerator = np.dot(top_k_sims.values, user_vector.loc[top_k_sims.index].values)
+    # Weighted Sum Formula: Sum(sim_ij * r_uj) / Sum(|sim_ij|)
+    numerator = np.dot(top_k_sims.values, top_k_ratings.values)
     denominator = np.sum(np.abs(top_k_sims.values))
     
     if denominator == 0:
@@ -123,7 +169,8 @@ def evaluate_model(train_df, eval_df, config, n_negative_samples=NEGATIVE_SAMPLE
     if train_filtered.empty:
         return 0.0
         
-    raw_um, norm_um, item_sim = calculate_similarity(train_filtered, norm, sim)
+    raw_um, norm_um, item_sim = calculate_similarity(train_filtered, norm, sim, min_ratings=5) \
+                                if sim == "pearson" else calculate_similarity(train_filtered, norm, sim)
     global_mean = train_filtered["rating"].mean()
     
     # CANDIDATE UNIVERSE: Restricted to items observed in training after min_ratings filtering
@@ -156,16 +203,21 @@ def evaluate_model(train_df, eval_df, config, n_negative_samples=NEGATIVE_SAMPLE
         if user_id in raw_um.index:
             user_train_ratings = norm_um.loc[user_id]
             # FIX: Infer rated items from raw matrix (NaN = not rated)
-            user_rated_items = set(raw_um.loc[user_id].dropna().index)
+            user_rated_items_train = set(raw_um.loc[user_id].dropna().index)
         else:
             user_train_ratings = None
-            user_rated_items = set()
+            user_rated_items_train = set()
+        
+        # SCIENTIFIC FIX: Include eval set items in rated_items for proper negative sampling
+        # "Negative" should mean "truly unseen", not "seen in eval but not in train"
+        user_rated_items_eval = set(user_data["movieId"].values)
+        user_rated_items = user_rated_items_train | user_rated_items_eval
         
         positive_items = set(positive_data["movieId"].values)
         
-        # FIX: Negative pool = all items EXCEPT rated items AND positive items
-        # This prevents duplicates in the candidate set
-        candidate_negatives = all_items - user_rated_items - positive_items
+        # FIX: Negative pool = all items EXCEPT rated items (train + eval)
+        # This ensures negatives are TRULY unseen movies
+        candidate_negatives = all_items - user_rated_items
         
         # FIX: User-specific deterministic sampling
         # Each user gets the same negatives regardless of iteration order
@@ -188,7 +240,8 @@ def evaluate_model(train_df, eval_df, config, n_negative_samples=NEGATIVE_SAMPLE
             
             pred = np.nan
             if user_train_ratings is not None and movie_id in item_sim.index:
-                pred_norm = predict_rating_item_based(user_train_ratings, item_sim[movie_id], movie_id, k, sim_method=sim)
+                # CRITICAL: Use only TRAIN rated items for neighbor selection (avoid data leakage)
+                pred_norm = predict_rating_item_based(user_train_ratings, item_sim[movie_id], movie_id, k, user_rated_items_train, sim_method=sim)
                 
                 if not np.isnan(pred_norm):
                     if norm == "zscore":
@@ -280,7 +333,7 @@ if __name__ == "__main__":
         ("zscore", "cosine"),
         ("mean_center", "pearson")
     ]
-    min_ratings_options = [3, 5, 10, 15]
+    min_ratings_options = [10, 15, 20]
     k_options = [10, 20, 40, 60]
     
     results = []
