@@ -27,12 +27,12 @@ class CacheManager:
         
         Args:
             cache_dir: Directory to store cache files.
-                      If None, uses project_root/cache/
+                      If None, uses project_root/data/cache/
         """
         if cache_dir is None:
             # Get project root (2 levels up from this file: utils/ -> src/ -> project_root/)
             project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-            cache_dir = os.path.join(project_root, "cache")
+            cache_dir = os.path.join(project_root, "data", "cache")  # FIXED: Use data/cache
         
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)

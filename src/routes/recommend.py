@@ -40,7 +40,7 @@ def get_models():
             recent_count=50000,
             normalization='zscore',
             item_k=20,
-            user_k=30,
+            user_k=20,  
             C=1.0
         )
     return _models_cache
@@ -88,6 +88,26 @@ async def generate_group_recommendation(request: GroupRecommendationRequest):
             group_users=request.user_ids,
             user_prompt=user_prompt
         )
+        
+        # Fix NaN values for JSON serialization
+        import pandas as pd
+        import numpy as np
+        
+        def clean_nan(obj):
+            """Recursively replace NaN with None for JSON compatibility"""
+            if isinstance(obj, dict):
+                return {k: clean_nan(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_nan(item) for item in obj]
+            elif isinstance(obj, (float, np.floating)):
+                if pd.isna(obj) or np.isinf(obj):
+                    return None
+                return obj
+            elif pd.isna(obj):  # Catch pandas NA types
+                return None
+            return obj
+        
+        output = clean_nan(output)
         
         # Return exact dictionary matched to Pydantic model implicitly
         return output

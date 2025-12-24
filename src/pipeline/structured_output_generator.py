@@ -111,6 +111,65 @@ class StructuredOutputGenerator:
             group_users, watched_set, section_a, section_b
         )
         
+        # ============================================================================
+        # TMDB ENRICHMENT: Add poster/backdrop/trailer URLs
+        # ============================================================================
+        from src.utils.tmdb_enrichment import enrich_movies_batch
+        
+        # Collect all unique movies from all sections
+        all_movies = []
+        
+        # Section A movies
+        for movie in section_a:
+            all_movies.append({
+                'movie_id': movie['movie_id'],
+                'title': movie['title']
+            })
+        
+        # Section B movies
+        for item in section_b:
+            all_movies.append({
+                'movie_id': item['movie_id'],
+                'title': item['title']
+            })
+        
+        # Section C movies (nested in themes)
+        for theme in section_c:
+            for movie in theme.get('recommended_movies', []):
+                all_movies.append({
+                    'movie_id': movie['movie_id'],
+                    'title': movie['title']
+                })
+        
+        # Remove duplicates (keep unique movie_ids)
+        unique_movies = {m['movie_id']: m for m in all_movies}.values()
+        
+        # Enrich with TMDB data (parallel fetching with caching)
+        enriched_movies = enrich_movies_batch(list(unique_movies))
+        
+        # Create lookup dict: movie_id -> {poster_url, backdrop_url, trailer_url}
+        tmdb_lookup = {
+            m['movie_id']: {
+                'poster_url': m.get('poster_url'),
+                'backdrop_url': m.get('backdrop_url'),
+                'trailer_url': m.get('trailer_url')
+            }
+            for m in enriched_movies
+        }
+        
+        # Add TMDB data to Section A
+        for movie in section_a:
+            movie.update(tmdb_lookup.get(movie['movie_id'], {}))
+        
+        # Add TMDB data to Section B
+        for item in section_b:
+            item.update(tmdb_lookup.get(item['movie_id'], {}))
+        
+        # Add TMDB data to Section C
+        for theme in section_c:
+            for movie in theme.get('recommended_movies', []):
+                movie.update(tmdb_lookup.get(movie['movie_id'], {}))
+        
         return {
             'section_a_top_recommendations': section_a,
             'section_b_common_watchlist': section_b,

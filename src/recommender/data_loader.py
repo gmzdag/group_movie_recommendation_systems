@@ -38,7 +38,7 @@ WATCHLIST_PATH = os.path.join(DATA_DIR, "watchlist.csv")
 # Load Movies
 # ------------------------------------------------------
 def load_movies():
-    movies = pd.read_csv(MOVIES_PATH)
+    movies = pd.read_csv(MOVIES_PATH, on_bad_lines='skip', engine='python')
 
     text_cols = [
         "genres", "Director", "Actors", "Overview",

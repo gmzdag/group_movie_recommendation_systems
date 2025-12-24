@@ -207,7 +207,7 @@ class ModelFactory:
             self.cf_matrix, 
             cosine_with_overlap,  # Changed from pearson_shrink to cosine_sim
             K=self.user_k,  # Will use K=20 from __init__ default
-            metric="cosine_overlap5"  # Cache key
+            metric="Cosine_Overlap5"  # Fixed: Match cache file naming convention
         )
     
     def create_ibcf(self, top_k: int = 20) -> ItemBasedCF:
