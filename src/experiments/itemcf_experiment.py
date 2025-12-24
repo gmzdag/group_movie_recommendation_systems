@@ -190,6 +190,10 @@ def evaluate_model(train_df, eval_df, config, n_negative_samples=NEGATIVE_SAMPLE
     eval_users_grouped = eval_df.groupby("userId")
     ndcg_scores = []
     
+    # Track statistics for RMSE/MAE on positive items
+    all_true_ratings = []
+    all_pred_ratings = []
+    
     for user_id, user_data in eval_users_grouped:
         
         # FIX: Positive items = only those with rating >= RELEVANCE_THRESHOLD
@@ -263,15 +267,53 @@ def evaluate_model(train_df, eval_df, config, n_negative_samples=NEGATIVE_SAMPLE
             ndcg_scores.append(score)
         except ValueError:
             pass
+            
+        # Accumulate strictly true positive ratings for RMSE/MAE
+        if positive_data.empty: continue
+        
+        # For RMSE, we need: True Rating vs Predicted Rating for the known positive items
+        for idx, row in positive_data.iterrows():
+            mid = row['movieId']
+            true_r = row['rating']
+            
+            # Re-predict specifically for accuracy metrics
+            pred_r = np.nan
+            if user_train_ratings is not None and mid in item_sim.index:
+                p_norm = predict_rating_item_based(user_train_ratings, item_sim[mid], mid, k, user_rated_items_train, sim_method=sim)
+                if not np.isnan(p_norm):
+                    if norm == "zscore":
+                        pred_r = user_means[user_id] + (p_norm * user_stds[user_id])
+                    elif norm == "mean_center":
+                        pred_r = user_means[user_id] + p_norm
+            
+            if np.isnan(pred_r):
+                pred_r = global_mean
+            
+            pred_r = min(max(pred_r, 0.5), 5.0)
+            
+            all_true_ratings.append(true_r)
+            all_pred_ratings.append(pred_r)
     
     if not ndcg_scores:
-        return 0.0
+        return {'NDCG': 0.0, 'RMSE': np.nan, 'MAE': np.nan}
     
-    return np.mean(ndcg_scores)
+    avg_ndcg = float(np.mean(ndcg_scores))
+    
+    # Calculate global RMSE/MAE for this config on positives
+    if all_pred_ratings:
+        mse = np.mean(np.square(np.array(all_true_ratings) - np.array(all_pred_ratings)))
+        rmse = np.sqrt(mse)
+        mae = np.mean(np.abs(np.array(all_true_ratings) - np.array(all_pred_ratings)))
+    else:
+        rmse = np.nan
+        mae = np.nan
+        
+    return {'NDCG': avg_ndcg, 'RMSE': rmse, 'MAE': mae}
 
-def generate_visualizations(results_df, best_config, val_score, test_score, output_dir):
+def generate_visualizations(results_df, best_config, val_metrics, test_metrics, output_dir):
     results_sorted = results_df.sort_values(by="NDCG", ascending=False)
     results_sorted.to_csv(os.path.join(output_dir, "validation_results_table.csv"), index=False)
+    results_sorted.to_csv(os.path.join(output_dir, "itemcf_results.csv"), index=False)
     
     top_10 = results_sorted.head(10).copy()
     top_10["label"] = top_10.apply(lambda x: f"{x['normalization'][:1]}+{x['similarity'][:3]}, m={x['min_ratings']}, k={x['top_k']}", axis=1)
@@ -309,14 +351,14 @@ def generate_visualizations(results_df, best_config, val_score, test_score, outp
     
     comparison_df = pd.DataFrame({
         "Split": ["Validation", "Test"],
-        "NDCG@10": [val_score, test_score]
+        "NDCG@10": [val_metrics['NDCG'], test_metrics['NDCG']]
     })
     
     plt.figure(figsize=(6, 6))
     ax = sns.barplot(data=comparison_df, x="Split", y="NDCG@10", palette=["#A9A9A9", "#228B22"])
     plt.title(f"Generalization Check\n(Best Config: {best_config['normalization']}+{best_config['similarity']})")
     plt.ylim(0, 1.0)
-    for i, v in enumerate([val_score, test_score]):
+    for i, v in enumerate([val_metrics['NDCG'], test_metrics['NDCG']]):
         ax.text(i, v + 0.01, f"{v:.4f}", ha='center', fontweight='bold')
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "fig_4_val_vs_test.svg"))
@@ -333,7 +375,7 @@ if __name__ == "__main__":
         ("zscore", "cosine"),
         ("mean_center", "pearson")
     ]
-    min_ratings_options = [10, 15, 20]
+    min_ratings_options = [3, 5, 10, 15, 20]
     k_options = [10, 20, 40, 60]
     
     results = []
@@ -356,10 +398,16 @@ if __name__ == "__main__":
                 }
                 
                 try:
-                    ndcg = evaluate_model(train_df, valid_df, config)
+                    val_metrics = evaluate_model(train_df, valid_df, config)
+                    ndcg = val_metrics['NDCG']
                     config_str = f"{norm}+{sim}, min={min_r}, k={k}"
-                    print(f"{config_str:<50} | {ndcg:.4f}")
-                    results.append({**config, "NDCG": ndcg})
+                    
+                    print(f"{config_str:<50} | {ndcg:.4f} (RMSE: {val_metrics['RMSE']:.4f})")
+                    
+                    # Merge config with metrics for saving
+                    result_entry = {**config}
+                    result_entry.update(val_metrics)
+                    results.append(result_entry)
                     
                     if ndcg > best_score:
                         best_score = ndcg
@@ -367,6 +415,8 @@ if __name__ == "__main__":
                         
                 except Exception as e:
                     print(f"Failed config {config}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     
     print("-" * 65)
     print(f"Best Config Found: {best_config}")
@@ -374,7 +424,8 @@ if __name__ == "__main__":
     
     print("\n--- FINAL EVALUATION on TEST SET ---")
     if best_config:
-        test_ndcg = evaluate_model(train_df, test_df, best_config)
+        test_metrics = evaluate_model(train_df, test_df, best_config)
+        test_ndcg = test_metrics['NDCG']
         print(f"FINAL TEST NDCG@10: {test_ndcg:.4f}")
         
         RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
@@ -388,7 +439,7 @@ if __name__ == "__main__":
             f.write(f"Generalization Gap: {abs(best_score - test_ndcg):.4f}\n")
         
         results_df = pd.DataFrame(results)
-        generate_visualizations(results_df, best_config, best_score, test_ndcg, RESULTS_DIR)
+        generate_visualizations(results_df, best_config, {'NDCG': best_score}, test_metrics, RESULTS_DIR)
         print(f"\nArtifacts generated in {RESULTS_DIR}")
     else:
         print("No valid configuration found.")

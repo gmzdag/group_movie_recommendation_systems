@@ -134,21 +134,24 @@ class HybridModel1:
         ROBUST: Includes error handling to prevent crashes from individual user failures.
         """
         # Filter out movies watched by any member
-        valid_candidates = []
-        for mid in candidates:
-            watched = False
+        # ------------------------------------------------------------------
+        # OPTIMIZED: Pre-fetch watched items for all group members
+        # ------------------------------------------------------------------
+        group_watched_items = set()
+        for uid in user_ids:
             try:
-                for uid in user_ids:
-                    if uid in self.ib_model.raw_um.index and mid in self.ib_model.raw_um.columns:
-                        if pd.notna(self.ib_model.raw_um.loc[uid, mid]):
-                            watched = True
-                            break
+                if uid in self.ib_model.raw_um.index:
+                    # Fast Pandas: Get indices of non-null values (watched items)
+                    # accessing .loc[uid] once is much faster than .loc[uid, mid] N times
+                    user_series = self.ib_model.raw_um.loc[uid]
+                    watched_mids = user_series[user_series.notna()].index.tolist()
+                    group_watched_items.update(watched_mids)
             except Exception as e:
-                print(f"[WARNING] Error checking watched status for movie {mid}: {e}")
+                print(f"[WARNING] Error fetching history for user {uid}: {e}")
                 continue
-            
-            if not watched:
-                valid_candidates.append(mid)
+                
+        # Filter candidates (Set Difference)
+        valid_candidates = [mid for mid in candidates if mid not in group_watched_items]
         
         # Filter sequels to prevent spoilers (unless prequel is seen)
         try:
@@ -162,7 +165,13 @@ class HybridModel1:
         # Reference: Masthoff, J. (2011). Group recommender systems: Combining individual models.
         
         group_results = []
-        for mid in valid_candidates:
+        total_candidates = len(valid_candidates)
+        
+        for idx, mid in enumerate(valid_candidates, 1):
+            # Progress logging every 100 movies
+            if idx % 100 == 0 or idx == 1 or idx == total_candidates:
+                print(f"    [PREDICT] Processing movie {idx}/{total_candidates} (ID: {mid})...", flush=True)
+            
             scores = []
             for uid in user_ids:
                 try:
