@@ -5,6 +5,7 @@ import re
 import zipfile
 import io
 import sys
+import pandas as pd
 
 # Define Paths
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -150,7 +151,10 @@ def load_movie_mapping():
             title_clean = re.sub(r"\(\d{4}\)", "", full_title)
             title_clean = title_clean.strip().lower()
             key = f"{title_clean}_{year}"
-            mapping[key] = int(row["movieId"])
+            try:
+                mapping[key] = int(float(row["movieId"]))
+            except ValueError:
+                continue
     return mapping
 
 
@@ -171,8 +175,13 @@ def import_letterboxd_export(letterboxd_username: str, export_path: str, update:
 
     movie_map = load_movie_mapping()
     
+    # Import TMDB enrichment helpers
+    from src.utils.tmdb_enrichment import search_movie_on_tmdb
+    from src.utils.tmdb_full_metadata import fetch_full_movie_metadata
+    
     # Track if we successfully imported any data
     total_imported = 0
+    missing_movies = []  # Track movies not in dataset for TMDB enrichment
 
     # --- RATINGS IMPORT ---
     def import_ratings(source_rows):
@@ -195,6 +204,9 @@ def import_letterboxd_export(letterboxd_username: str, export_path: str, update:
             key = f"{title}_{year}"
 
             if key not in movie_map:
+                # Try TMDB enrichment
+                print(f"🔍 Movie not in dataset: {title} ({year}), searching TMDB...")
+                missing_movies.append((title, year, row))
                 continue
 
             movie_id = movie_map[key]
@@ -227,6 +239,7 @@ def import_letterboxd_export(letterboxd_username: str, export_path: str, update:
     # --- WATCHLIST IMPORT ---
     def import_watchlist(source_rows, current_user_id):
         nonlocal total_imported
+        nonlocal missing_movies  # Access parent scope
         
         # If user doesn't exist yet, create them (watchlist-only scenario)
         if current_user_id is None:
@@ -243,6 +256,9 @@ def import_letterboxd_export(letterboxd_username: str, export_path: str, update:
             key = f"{title}_{year}"
 
             if key not in movie_map:
+                # Try TMDB enrichment
+                print(f"🔍 Movie not in dataset: {title} ({year}), searching TMDB...")
+                missing_movies.append((title, year, row))
                 continue
 
             movie_id = movie_map[key]
@@ -372,6 +388,138 @@ def import_letterboxd_export(letterboxd_username: str, export_path: str, update:
             print(f"[ERROR] Failed to read CSV file: {e}")
             raise
     
+    # **TMDB ENRICHMENT**: Process missing movies FIRST
+    if missing_movies:
+        print(f"\n🎬 [TMDB ENRICHMENT] Found {len(missing_movies)} movies not in dataset")
+        print("Attempting to fetch from TMDB and add to movies_tmdb.csv...")
+        
+        enriched_count = 0
+        newly_added_movies = []  # Track successfully added movies
+        
+        for title, year, row in missing_movies:
+            try:
+                # **DUPLICATE CHECK**: Reload movie_map to check if already added
+                key = f"{title}_{year}"
+                if key in movie_map:
+                    print(f"  ⏭️ Already in dataset: {title} ({year}) → movieId={movie_map[key]}")
+                    # Still add to newly_added_movies for re-import
+                    newly_added_movies.append((title, year, row, movie_map[key]))
+                    continue
+                
+                # Search TMDB
+                tmdb_id = search_movie_on_tmdb(f"{title} ({year})")
+                if not tmdb_id:
+                    print(f"  ❌ Not found on TMDB: {title} ({year})")
+                    continue
+                
+                # Fetch metadata
+                tmdb_data = fetch_full_movie_metadata(tmdb_id)
+                if not tmdb_data:
+                    print(f"  ❌ Failed to fetch metadata: {title} ({year})")
+                    continue
+                
+                # Add to movies_tmdb.csv
+                # Get next movieId - Use proper CSV reading
+                try:
+                    movies_df = pd.read_csv(MOVIES_FILE, encoding='utf-8', on_bad_lines='skip')
+                    
+                    # **DOUBLE CHECK**: Verify not already in CSV
+                    existing_titles = movies_df['title'].str.lower().tolist()
+                    search_title = f"{title} ({year})".lower()
+                    if search_title in existing_titles:
+                        existing_id = movies_df[movies_df['title'].str.lower() == search_title]['movieId'].iloc[0]
+                        print(f"  ⏭️ Found in CSV: {title} ({year}) → movieId={existing_id}")
+                        movie_map[key] = int(existing_id)
+                        newly_added_movies.append((title, year, row, int(existing_id)))
+                        continue
+                    
+                    next_movie_id = int(movies_df['movieId'].max()) + 1
+                except Exception as csv_error:
+                    print(f"  ⚠️ CSV read error, using fallback: {csv_error}")
+                    # Fallback: count lines
+                    with open(MOVIES_FILE, 'r', encoding='utf-8') as f:
+                        next_movie_id = sum(1 for _ in f)  # Approximate
+                
+                # Prepare new row with ALL columns
+                new_row = {
+                    'movieId': next_movie_id,
+                    'title': f"{title.title()} ({year})",
+                    'genres': tmdb_data.get('genres', ''),
+                    'Director': tmdb_data.get('Director', ''),
+                    'Actors': tmdb_data.get('Actors', ''),
+                    'Overview': tmdb_data.get('Overview', ''),
+                    'Production_Countries': tmdb_data.get('Production_Countries', ''),
+                    'Production_Companies': tmdb_data.get('Production_Companies', ''),
+                    'Vote_Average': tmdb_data.get('Vote_Average', ''),
+                    'Vote_Count': tmdb_data.get('Vote_Count', ''),
+                    'Budget': tmdb_data.get('Budget', ''),
+                    'Revenue': tmdb_data.get('Revenue', ''),
+                    'Keywords': tmdb_data.get('Keywords', ''),
+                    'Runtime': tmdb_data.get('Runtime', ''),
+                    'Content_Type': tmdb_data.get('Content_Type', 'Movie'),
+                    'poster_path': tmdb_data.get('poster_path', ''),
+                    'backdrop_path': tmdb_data.get('backdrop_path', ''),
+                    'trailer_key': tmdb_data.get('trailer_key', '')
+                }
+                
+                # Append to CSV with proper quoting
+                new_df = pd.DataFrame([new_row])
+                new_df.to_csv(MOVIES_FILE, mode='a', header=False, index=False, 
+                             encoding='utf-8', quoting=1)  # QUOTE_ALL
+                
+                # Update movie_map for subsequent imports
+                movie_map[key] = next_movie_id
+                
+                # Track for re-import
+                newly_added_movies.append((title, year, row, next_movie_id))
+                
+                print(f"  ✅ Added to dataset: {title} ({year}) → movieId={next_movie_id}")
+                enriched_count += 1
+                
+            except Exception as e:
+                print(f"  ⚠️ Error enriching {title} ({year}): {e}")
+                continue
+        
+        print(f"\n✅ TMDB Enrichment complete: {enriched_count}/{len(missing_movies)} movies added")
+        
+        # **RE-IMPORT**: Now import the newly added movies
+        if newly_added_movies:
+            print(f"\n🔄 Re-importing {len(newly_added_movies)} newly added movies...")
+            
+            for title, year, row, movie_id in newly_added_movies:
+                try:
+                    # Determine if it's ratings or watchlist based on row structure
+                    if 'Rating' in row:
+                        # Ratings
+                        rating = float(row['Rating'])
+                        timestamp = int(time.time())
+                        
+                        if final_user_id is None:
+                            final_user_id = create_user(letterboxd_username)
+                        
+                        with open(RATINGS_FILE, "a", encoding="utf-8", newline="") as out:
+                            writer = csv.writer(out)
+                            writer.writerow([final_user_id, movie_id, rating, timestamp])
+                        
+                        total_imported += 1
+                        print(f"  ✅ Imported rating: {title} ({year})")
+                    else:
+                        # Watchlist
+                        if final_user_id is None:
+                            final_user_id = create_user(letterboxd_username)
+                        
+                        with open(WATCHLIST_FILE, "a", encoding="utf-8", newline="") as out:
+                            writer = csv.writer(out)
+                            writer.writerow([final_user_id, movie_id])
+                        
+                        total_imported += 1
+                        print(f"  ✅ Imported watchlist: {title} ({year})")
+                        
+                except Exception as e:
+                    print(f"  ⚠️ Error re-importing {title} ({year}): {e}")
+                    continue
+    
+    # Now check if anything was imported
     if total_imported == 0:
         raise Exception("No data was imported. Please check your export file.")
     

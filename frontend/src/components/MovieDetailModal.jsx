@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 const MovieDetailModal = ({ movie, onClose }) => {
     if (!movie) return null;
@@ -15,29 +15,10 @@ const MovieDetailModal = ({ movie, onClose }) => {
         'CONTENT_BASED': 'Content Similarity',
         'WATCHLIST': 'Watchlist Match',
         'HYBRID': 'Hybrid Signal',
-        'AI_AGENT': 'AI Reasoning'
+        'AI_AGENT': 'AI Reasoning',
+        'IBCF': 'Item-Based CF',
+        'CBF': 'Content-Based'
     };
-
-    // Calculate signal breakdown
-    const calculateSignalBreakdown = () => {
-        if (!movie.user_explanations) return {};
-
-        const signals = {};
-        Object.values(movie.user_explanations).forEach(expl => {
-            const signal = expl.signal_source || 'Unknown';
-            signals[signal] = (signals[signal] || 0) + 1;
-        });
-
-        const total = Object.values(signals).reduce((a, b) => a + b, 0);
-        const breakdown = {};
-        Object.entries(signals).forEach(([signal, count]) => {
-            breakdown[signal] = Math.round((count / total) * 100);
-        });
-
-        return breakdown;
-    };
-
-    const signalBreakdown = calculateSignalBreakdown();
 
     return (
         <div
@@ -64,12 +45,13 @@ const MovieDetailModal = ({ movie, onClose }) => {
                     background: 'linear-gradient(135deg, #1a1a1a, #2a2a2a)',
                     borderRadius: '24px',
                     padding: '40px',
-                    maxWidth: '600px',
+                    maxWidth: '700px',
                     width: '100%',
-                    maxHeight: '80vh',
+                    maxHeight: '85vh',
                     overflowY: 'auto',
                     border: '1px solid rgba(255,255,255,0.1)',
-                    boxShadow: '0 20px 60px rgba(0,0,0,0.5)'
+                    boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+                    position: 'relative'
                 }}
             >
                 {/* Close Button */}
@@ -126,51 +108,6 @@ const MovieDetailModal = ({ movie, onClose }) => {
                     </div>
                 </div>
 
-                {/* Signal Breakdown */}
-                {Object.keys(signalBreakdown).length > 0 && (
-                    <div style={{ marginBottom: '32px' }}>
-                        <h3 style={{ fontSize: '1.1rem', color: '#4fc3f7', marginBottom: '12px' }}>
-                            📊 Signal Breakdown
-                        </h3>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                            {Object.entries(signalBreakdown).map(([signal, percentage]) => (
-                                <div key={signal} style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                    <div style={{ flex: 1 }}>
-                                        <div style={{
-                                            background: 'rgba(255,255,255,0.05)',
-                                            height: '24px',
-                                            borderRadius: '12px',
-                                            overflow: 'hidden',
-                                            position: 'relative'
-                                        }}>
-                                            <div style={{
-                                                background: 'linear-gradient(90deg, #4fc3f7, #29b6f6)',
-                                                height: '100%',
-                                                width: `${percentage}%`,
-                                                transition: 'width 0.3s ease'
-                                            }} />
-                                            <span style={{
-                                                position: 'absolute',
-                                                left: '12px',
-                                                top: '50%',
-                                                transform: 'translateY(-50%)',
-                                                fontSize: '0.8rem',
-                                                fontWeight: 'bold',
-                                                color: '#fff'
-                                            }}>
-                                                {signalNames[signal] || signal}
-                                            </span>
-                                        </div>
-                                    </div>
-                                    <span style={{ fontSize: '0.9rem', color: '#4fc3f7', fontWeight: 'bold', minWidth: '45px', textAlign: 'right' }}>
-                                        {percentage}%
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
-
                 {/* Group Explanation */}
                 <div style={{ marginBottom: '32px' }}>
                     <h3 style={{ fontSize: '1.1rem', color: '#81c784', marginBottom: '12px' }}>
@@ -183,7 +120,7 @@ const MovieDetailModal = ({ movie, onClose }) => {
                         border: '1px solid rgba(129,199,132,0.2)'
                     }}>
                         <p style={{ margin: 0, fontSize: '0.95rem', color: '#ddd', lineHeight: '1.6' }}>
-                            {movie.group_explanation}
+                            {movie.group_explanation || 'Recommended for the group.'}
                         </p>
                     </div>
                 </div>

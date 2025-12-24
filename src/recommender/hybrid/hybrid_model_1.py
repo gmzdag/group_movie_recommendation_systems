@@ -3,17 +3,31 @@ import pandas as pd
 
 class HybridModel1:
     """
-    Hybrid Model 1: Dynamic Weighted Hybrid
-    ---------------------------------------
-    Combines Item-Based CF and Content-Based Filtering using a dynamic weight
-    based on the number of neighbors available for the Item-Based prediction.
+    Hybrid Model 1: Item-Based CF + Content-Based (Weighted Hybrid)
+    ----------------------------------------------------------------
     
-    Formula:
-        Score = (n / (n + C)) * IB_Score + (C / (n + C)) * CB_Score
+    **HYBRIDIZATION MECHANISM**: Dynamic Weighted Hybrid
+    - Combines Item-Based Collaborative Filtering (IBCF) with Content-Based Filtering (CBF)
+    - Uses neighbor support (n) to dynamically weight between IBCF and CBF
+    
+    **INDIVIDUAL PREDICTION FORMULA**:
+        α(n) = n / (n + C)      # IBCF weight
+        β(n) = C / (n + C)      # CBF weight
+        score(u, i) = α(n) * IBCF(u, i) + β(n) * CBF(u, i)
         
     Where:
-        n = number of item neighbors used (support)
-        C = hyperparameter controlling the trust transition (lower C = trust IB sooner)
+        n = number of item neighbors used in IBCF prediction
+        C = trust transition hyperparameter (controls IBCF vs CBF balance)
+    
+    **GROUP AGGREGATION**: AVERAGE (Baseline Strategy)
+    - Group score = Mean of individual user scores
+    - Reference: Masthoff, J. (2011). Group recommender systems: Combining individual models.
+    - This is the standard baseline for controlled comparison with H2.
+    
+    **KEY DIFFERENCE FROM H2**:
+    - H1: Weighted hybridization (IBCF + CBF)
+    - H2: Switching hybridization (UBCF + CBF)
+    - Both use AVERAGE group aggregation for fair comparison.
     """
     
     def __init__(self, ib_model, cb_model, C=1):
@@ -41,16 +55,32 @@ class HybridModel1:
         # Get Content-Based prediction (fallback)
         cb_pred = self.cb_model.predict_rating(user_id, movie_id)
         
+        # **SANITY CHECK**: Ensure at least one model produces a valid score
+        if np.isnan(ib_pred) and np.isnan(cb_pred):
+            # Both models failed - return global mean as last resort
+            return self.ib_model.global_mean
+        
         # Handle cases where one model fails
-        if np.isnan(ib_pred): return cb_pred
-        if np.isnan(cb_pred): return ib_pred
+        if np.isnan(ib_pred): 
+            return cb_pred  # Pure CBF
+        if np.isnan(cb_pred): 
+            return ib_pred  # Pure IBCF
             
         # Dynamic Weighting based on Trust (neighbors count)
         n = neighbors_count
         alpha = n / (n + self.C) # Trust IB more as n increases
         beta = self.C / (n + self.C)
         
-        return (alpha * ib_pred) + (beta * cb_pred)
+        # **SANITY CHECK**: Ensure weights sum to 1.0
+        assert abs(alpha + beta - 1.0) < 1e-6, f"Weights don't sum to 1: α={alpha}, β={beta}"
+        
+        final_score = (alpha * ib_pred) + (beta * cb_pred)
+        
+        # **SANITY CHECK**: Ensure final score is valid
+        assert not np.isnan(final_score), f"Final score is NaN: α={alpha}, β={beta}, IBCF={ib_pred}, CBF={cb_pred}"
+        assert not np.isinf(final_score), f"Final score is Inf: α={alpha}, β={beta}, IBCF={ib_pred}, CBF={cb_pred}"
+        
+        return final_score
 
     def explain(self, user_id, movie_id):
         """
@@ -129,10 +159,37 @@ class HybridModel1:
 
     def recommend_for_group(self, user_ids, candidates, top_k=10):
         """
-        Generates group recommendations by filtering watched items and averaging scores.
+        Generates group recommendations using AVERAGE aggregation strategy.
         
-        ROBUST: Includes error handling to prevent crashes from individual user failures.
+        **ALGORITHM**:
+        1. Filter out items watched by any group member (in training set)
+        2. For each candidate item:
+           - Predict individual score for each user (using weighted hybrid)
+           - Aggregate using AVERAGE strategy
+        3. Rank by group score and return top-K
+        
+        **GROUP AGGREGATION**: AVERAGE (Baseline)
+        - Group_Score(i) = Mean([score(u, i) for u in group])
+        - This is the ONLY aggregation strategy used in H1.
+        - Reference: Masthoff, J. (2011).
+        
+        **IMPORTANT**: 
+        - This is NOT least misery, harmonic mean, or fairness-aware.
+        - This is a conscious baseline choice for controlled comparison with H2.
+        - Both H1 and H2 use AVERAGE aggregation.
+        
+        Args:
+            user_ids: List of user IDs in the group
+            candidates: List of candidate movie IDs (must be in CF matrix)
+            top_k: Number of recommendations to return
+            
+        Returns:
+            List[Dict]: Recommendations with movie_id, score, explanations
         """
+        # **TYPE ENFORCEMENT**: Ensure all IDs are integers
+        candidates = [int(mid) for mid in candidates]
+        user_ids = [int(uid) for uid in user_ids]
+        
         # Filter out movies watched by any member
         # ------------------------------------------------------------------
         # OPTIMIZED: Pre-fetch watched items for all group members
@@ -145,7 +202,7 @@ class HybridModel1:
                     # accessing .loc[uid] once is much faster than .loc[uid, mid] N times
                     user_series = self.ib_model.raw_um.loc[uid]
                     watched_mids = user_series[user_series.notna()].index.tolist()
-                    group_watched_items.update(watched_mids)
+                    group_watched_items.update([int(m) for m in watched_mids])
             except Exception as e:
                 print(f"[WARNING] Error fetching history for user {uid}: {e}")
                 continue
@@ -159,10 +216,17 @@ class HybridModel1:
         except Exception as e:
             print(f"[WARNING] Sequel filtering failed: {e}. Continuing without sequel filter.")
                 
-        # Calculate Group Score using Standard Average Strategy (Masthoff, 2011)
-        # We use the "Average" (Additive) strategy which is the standard baseline
-        # for maximizing total group utility in offline evaluation.
+        # **GROUP AGGREGATION: AVERAGE STRATEGY**
+        # This is the ONLY aggregation strategy used in H1.
+        # Group_Score(item) = Mean([predict(user, item) for user in group])
         # Reference: Masthoff, J. (2011). Group recommender systems: Combining individual models.
+        # 
+        # **IMPORTANT**: We do NOT use:
+        # - Least Misery (min aggregation)
+        # - Harmonic Mean
+        # - Fairness-aware aggregation
+        # 
+        # This is a conscious baseline choice for controlled comparison with H2.
         
         group_results = []
         total_candidates = len(valid_candidates)
@@ -182,7 +246,8 @@ class HybridModel1:
                     continue
             
             if scores:
-                # Literature Standard: Average Strategy
+                # **AVERAGE AGGREGATION** (Baseline Strategy)
+                # Group score = arithmetic mean of individual user scores
                 final_score = np.mean(scores)
                 group_results.append((mid, final_score))
                 
@@ -212,8 +277,8 @@ class HybridModel1:
                 group_reason = "Recommended for the group."
             
             final_recommendations.append({
-                'movie_id': mid,
-                'score': score,
+                'movie_id': int(mid),  # **ENFORCE INTEGER**
+                'score': float(score),
                 'group_explanation': group_reason,
                 'explanations': explanations
             })

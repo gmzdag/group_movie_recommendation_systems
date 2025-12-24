@@ -91,24 +91,65 @@ class StructuredOutputGenerator:
         # Get direct watchlist matches (for exclusion from Section A)
         direct_watchlist_set = self._get_direct_watchlist_set(group_users)
         
-        # Generate Section A (multi-model or single model)
+        # ============================================================================
+        # GLOBAL FILTERING (AGENT)
+        # ============================================================================
+        valid_ids_set = None
+        filtered_candidates_list = None
+        
+        if user_prompt and HAS_AGENT and self.film_agent:
+            print(f"[StructuredOutput] Applying Global Agent Filter for prompt: '{user_prompt}'")
+            # 1. Get ALL movies as candidates (Global Scan)
+            # Function default is limit=1000, we override with scan_all=True to get EVERYTHING
+            all_candidates = self._get_raw_enriched_candidates(
+                group_users, watched_set, direct_watchlist_set, limit=100000, scan_all=True
+            )
+            
+            # 2. Run Agent
+            filter_result = self.film_agent.filter_from_prompt(user_prompt, all_candidates)
+            valid_ids_list = filter_result.get('filtered_movie_ids', [])
+            valid_ids_set = set(valid_ids_list)
+            
+            # 3. Create filtered candidates list for Section A
+            filtered_candidates_list = [c for c in all_candidates if c['movieId'] in valid_ids_set]
+            
+            # Capture agent output for reasoning augmentation later if needed
+            # (Reasoning is attached in _apply_agent_filter, but here we do manual)
+            agent_rec = filter_result.get('agent_recommendation')
+            agent_reasons = {c['movieId']: filter_result.get('filters_applied', {}) for c in filtered_candidates_list}
+            
+            print(f"[StructuredOutput] Global Filter kept {len(valid_ids_set)} / {len(all_candidates)} movies.")
+
+        # ============================================================================
+        # GENERATE SECTIONS
+        # ============================================================================
+        
+        # Section A
         if self.use_multi_model_selection and self.model_performance:
             section_a = self._generate_section_a_multi_model(
-                group_users, watched_set, direct_watchlist_set, user_prompt=user_prompt
+                group_users, watched_set, direct_watchlist_set, 
+                user_prompt=user_prompt,
+                citation_reasoning=agent_reasons if filtered_candidates_list else None,
+                pre_filtered_candidates=filtered_candidates_list # Pass PRE-FILTERED list
             )
         else:
             section_a = self._generate_section_a(
-                group_users, watched_set, direct_watchlist_set, user_prompt=user_prompt
+                group_users, watched_set, direct_watchlist_set, 
+                user_prompt=user_prompt,
+                citation_reasoning=agent_reasons if filtered_candidates_list else None,
+                pre_filtered_candidates=filtered_candidates_list
             )
         
-        # Generate Section B
+        # Section B (Apply global filter if valid_ids_set exists)
         section_b = self._generate_section_b(
-            group_users, watched_set, section_a
+            group_users, watched_set, section_a,
+            allowed_ids=valid_ids_set 
         )
         
-        # Generate Section C
+        # Section C (Apply global filter if valid_ids_set exists)
         section_c = self._generate_section_c(
-            group_users, watched_set, section_a, section_b
+            group_users, watched_set, section_a, section_b,
+            allowed_ids=valid_ids_set
         )
         
         # ============================================================================
@@ -236,41 +277,56 @@ class StructuredOutputGenerator:
         
         return allocation
     
-    def _get_candidates_for_agent(self, group_users: List[int], 
+    def _get_raw_enriched_candidates(self, group_users: List[int], 
                                  watched_set: Set[int], 
                                  direct_watchlist_set: Set[int], 
-                                 top_k: int = 50) -> List[Dict[str, Any]]:
+                                 limit: int = 1000,
+                                 scan_all: bool = False) -> List[Dict[str, Any]]:
         """
-        Generate a rich list of candidates for the AI Agent to process.
-        Returns a list of Dicts with full metadata (overview, cast, etc.).
+        Generate a list of raw candidates enriched with metadata for Agent Filtering.
+        
+        Args:
+            scan_all: If True, returns ALL movies in the database (for strict filtering).
+                      If False, returns only CF/Popularity candidates (for relevance).
         """
-        # Get raw candidate IDs
-        candidate_ids = self._get_candidates_for_section_a(group_users, watched_set, direct_watchlist_set)
-        
-        # Take top-K candidates (scored by Hybrid Model 1 as a baseline)
-        scored_recs = self.h1.recommend_for_group(group_users, candidate_ids, top_k=top_k)
-        
-        # Enrich with metadata
         enriched_candidates = []
-        for rec in scored_recs:
-            movie_id = rec['movie_id']
-            # Lookup movie details
-            movie_row = self.movies_df[self.movies_df['movieId'] == movie_id]
-            if not movie_row.empty:
-                row = movie_row.iloc[0]
-                enriched_candidates.append({
-                    'movieId': int(movie_id),
-                    'title': str(row.get('title', 'Unknown')),
-                    'genres': str(row.get('genres', '')).split('|'),
-                    'overview': str(row.get('overview', '')),
-                    'keywords': str(row.get('keywords', '')),
-                    'actors': str(row.get('actors', '')),
-                    'director': str(row.get('director', '')),
-                    'runtime': int(row.get('runtime', 0)) if pd.notna(row.get('runtime')) else 0,
-                    'vote_average': float(row.get('vote_average', 0.0)) if pd.notna(row.get('vote_average')) else 0.0,
-                    'baseline_score': rec['score'],
-                    'explanations': rec['explanations'] # Keep original explanations
-                })
+        
+        if scan_all:
+            print("[StructuredOutput] Global Search Mode Enabled: Scanning entire database for Agent.")
+            # global search: use all movies (excluding watched/watchlist)
+            excluded = watched_set | direct_watchlist_set
+            # Only keep movies NOT in excluded
+            rows = self.movies_df[~self.movies_df['movieId'].isin(excluded)]
+        else:
+            # Standard candidate generation
+            candidate_ids = list(set(self._get_candidates_for_section_a(group_users, watched_set, direct_watchlist_set)))
+            
+            # Limit if too many
+            if len(candidate_ids) > limit:
+                candidate_ids = candidate_ids[:limit]
+                
+            rows = self.movies_df[self.movies_df['movieId'].isin(candidate_ids)]
+        
+        # Ensure we don't have NaNs in movieId
+        rows = rows.dropna(subset=['movieId'])
+        
+        # Convert to dictionary format required by Agent
+        raw_dicts = rows.to_dict('records')
+        
+        for row in raw_dicts:
+            enriched_candidates.append({
+                'movieId': int(row['movieId']),
+                'title': str(row.get('title', 'Unknown')),
+                'year': int(row.get('year', 0)) if pd.notna(row.get('year')) else 0,
+                'genres': str(row.get('genres', '')).split('|'),
+                'overview': str(row.get('overview', '')),
+                'keywords': str(row.get('keywords', '')),
+                'actors': str(row.get('actors', '')),
+                'director': str(row.get('director', '')),
+                'countries': str(row.get('Production_Countries', '')),
+                'runtime': int(row.get('runtime', 0)) if pd.notna(row.get('runtime')) else 0,
+                'vote_average': float(row.get('vote_average', 0.0)) if pd.notna(row.get('vote_average')) else 0.0
+            })
         
         return enriched_candidates
 
@@ -335,57 +391,57 @@ class StructuredOutputGenerator:
         group_users: List[int],
         watched_set: Set[int],
         direct_watchlist_set: Set[int],
-        user_prompt: Optional[str] = None
+        user_prompt: Optional[str] = None,
+        citation_reasoning: Optional[Dict] = None,
+        pre_filtered_candidates: Optional[List[Dict]] = None
     ) -> List[Dict[str, Any]]:
         """
         Generate Top-10 using multi-model selection strategy.
-        Supports Agent Filtering if user_prompt is provided.
+        If pre_filtered_candidates is provided (Agent Mode), we skip candidate generation 
+        and just Rank the provided candidates.
         """
         
-        # --- AGENT PATH ---
-        if user_prompt and HAS_AGENT:
-            # 1. Get rich candidates
-            rich_candidates = self._get_candidates_for_agent(
-                group_users, watched_set, direct_watchlist_set, top_k=60
-            ) 
-            
-            # 2. Initialize temporary agent if not passed in init
-            agent_to_use = self.film_agent
-            if not agent_to_use:
-                try:
-                    agent_to_use = get_filter_agent()
-                except Exception as e:
-                    print(f"[ERROR] Could not init agent on fly: {e}")
-            
-            # 3. Apply Agent Filter
-            if agent_to_use:
-                # We need to temporarily set self.film_agent if it was None
-                original_agent = self.film_agent
-                self.film_agent = agent_to_use
-                
-                filtered_candidates = self._apply_agent_filter(user_prompt, rich_candidates)
-                
-                # Restore
-                self.film_agent = original_agent
-                
-                if filtered_candidates:
-                    print(f"[AGENT] Success. Returning {len(filtered_candidates)} filtered items.")
-                    # Format for Section A output
-                    output = []
-                    for c in filtered_candidates[:10]:
-                        output.append({
-                            'movie_id': c['movieId'],
-                            'title': c['title'],
-                            'group_score': round(c['baseline_score'], 2),
-                            'source_model': 'AI_AGENT', # Mark source
-                            'group_explanation': f"AI Agent Match: {c.get('agent_reasoning', 'Matches your request.')}",
-                            'signal_source': 'AI_AGENT',
-                            'user_explanations': c.get('explanations', {})
-                        })
-                    return output
-            
-            print("[AGENT] Fallback to standard logic (agent failed or returned 0).")
-        
+        # --- AGENT / STRICT FILTER PATH ---
+        if pre_filtered_candidates is not None:
+             # We have a strict list of allowed movies.
+             # We just need to RANK them using the group model (HybridModel1) 
+             # because it's the best at scoring.
+             
+             if not pre_filtered_candidates:
+                 print("[SECTION A] Agent filter returned 0 results.")
+                 return []
+             
+             filtered_ids = [c['movieId'] for c in pre_filtered_candidates]
+             
+             # Rank them by group preference
+             scored_recs = self.h1.recommend_for_group(group_users, filtered_ids, top_k=10)
+             
+             output = []
+             for rec in scored_recs:
+                 mid = rec['movie_id']
+                 # Construct reasoning string from parsed criteria
+                 criteria = citation_reasoning.get(mid) if citation_reasoning else None
+                 reason_str = f"Matches criteria: {criteria}" if criteria else "Matches your request."
+                 
+                 output.append({
+                     'movie_id': mid,
+                     'title': self._get_movie_title(mid),
+                     'group_score': round(rec['score'], 2),
+                     'source_model': 'AI_AGENT', 
+                     'group_explanation': f"{reason_str}",
+                     'signal_source': 'AI_AGENT',
+                     'user_explanations': rec.get('explanations', {})
+                 })
+             return output
+
+        # --- AGENT PATH (Legacy Fallback if prompt given but no pre-filter?) ---
+        if user_prompt and HAS_AGENT and pre_filtered_candidates is None:
+            # This branch should rarely be hit if Orchestrator works, 
+            # but keeping for safety or direct calls.
+            # ... (Existing logic shifted or removed?)
+            # For brevity/safety, let's just warn and fall through or simplistic logic
+            pass
+    
         # --- STANDARD PATH ---
         
         print("\n[SECTION A] Using MULTI-MODEL selection strategy (Standard)")
@@ -475,6 +531,9 @@ class StructuredOutputGenerator:
             
             #     continue
             
+            # Get full metadata
+            metadata = self._get_movie_metadata(movie_id)
+            
             section_a_output.append({
                 'movie_id': movie_id,
                 'title': title,
@@ -483,7 +542,21 @@ class StructuredOutputGenerator:
                 'model_score': round(rec['score'], 2),
                 'group_explanation': rec['group_explanation'],
                 'signal_source': self._get_dominant_signal_source(user_explanations),
-                'user_explanations': user_explanations
+                'user_explanations': user_explanations,
+                # Metadata fields
+                'genres': metadata.get('genres'),
+                'Overview': metadata.get('Overview'),
+                'overview': metadata.get('overview'),  # Fallback
+                'Director': metadata.get('Director'),
+                'director': metadata.get('director'),  # Fallback
+                'Actors': metadata.get('Actors'),
+                'actors': metadata.get('actors'),  # Fallback
+                'Production_Countries': metadata.get('Production_Countries'),
+                'production_countries': metadata.get('production_countries'),  # Fallback
+                'release_date': metadata.get('release_date'),
+                'poster_url': metadata.get('poster_url'),
+                'backdrop_url': metadata.get('backdrop_url'),
+                'trailer_url': metadata.get('trailer_url')
             })
         
         return section_a_output[:10]
@@ -491,46 +564,37 @@ class StructuredOutputGenerator:
     def _generate_section_a(self, group_users: List[int], 
                            watched_set: Set[int],
                            direct_watchlist_set: Set[int],
-                           user_prompt: Optional[str] = None) -> List[Dict[str, Any]]:
+                           user_prompt: Optional[str] = None,
+                           citation_reasoning: Optional[Dict] = None,
+                           pre_filtered_candidates: Optional[List[Dict]] = None) -> List[Dict[str, Any]]:
         """
         Generate Top-10 ranked group recommendations (Legacy Single Model).
-        Also supports Agent Filtering now.
+        Unified with pre-filtered logic.
         """
         
-        # --- AGENT PATH ---
-        if user_prompt and HAS_AGENT:
+        if pre_filtered_candidates is not None:
              # Reuse logic from multi-model function for agent (it's model agnostic)
-            rich_candidates = self._get_candidates_for_agent(
-                group_users, watched_set, direct_watchlist_set, top_k=60
-            )
-            
-            # Initialize temporary agent if needed
-            agent_to_use = self.film_agent
-            if not agent_to_use:
-                try:
-                    agent_to_use = get_filter_agent()
-                except Exception:
-                    pass
-
-            if agent_to_use:
-                original_agent = self.film_agent
-                self.film_agent = agent_to_use
-                filtered_candidates = self._apply_agent_filter(user_prompt, rich_candidates)
-                self.film_agent = original_agent
-                
-                if filtered_candidates:
-                    output = []
-                    for c in filtered_candidates[:10]:
-                        output.append({
-                            'movie_id': c['movieId'],
-                            'title': c['title'],
-                            'group_score': round(c['baseline_score'], 2),
-                            'source_model': 'AI_AGENT',
-                            'group_explanation': f"AI Agent Match: {c.get('agent_reasoning', 'Matches request')}",
-                            'signal_source': 'AI_AGENT',
-                            'user_explanations': c.get('original_explanations', c.get('explanations', {}))
-                        })
-                    return output
+             if not pre_filtered_candidates: return []
+             
+             filtered_ids = [c['movieId'] for c in pre_filtered_candidates]
+             scored_recs = self.h1.recommend_for_group(group_users, filtered_ids, top_k=10)
+             
+             output = []
+             for rec in scored_recs:
+                 mid = rec['movie_id']
+                 criteria = citation_reasoning.get(mid) if citation_reasoning else None
+                 reason_str = f"Matches criteria: {criteria}" if criteria else "Matches request"
+                 
+                 output.append({
+                     'movie_id': mid,
+                     'title': self._get_movie_title(mid),
+                     'group_score': round(rec['score'], 2),
+                     'source_model': 'AI_AGENT',
+                     'group_explanation': f"{reason_str}",
+                     'signal_source': 'AI_AGENT',
+                     'user_explanations': rec.get('explanations', {})
+                 })
+             return output
 
         # --- STANDARD PATH ---
         
@@ -673,9 +737,11 @@ class StructuredOutputGenerator:
     
     def _generate_section_b(self, group_users: List[int],
                            watched_set: Set[int],
-                           section_a: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                           section_a: List[Dict[str, Any]],
+                           allowed_ids: Optional[Set[int]] = None) -> List[Dict[str, Any]]:
         """
         Generate common watchlist section.
+        If allowed_ids is provided, ONLY include matching movies (e.g. prompt compliance).
         """
         # Get movies in multiple watchlists
         wl_subset = self.watchlist_df[
@@ -697,6 +763,13 @@ class StructuredOutputGenerator:
             if mid not in watched_set
         }
         
+        if allowed_ids is not None:
+            # Apply global filter
+            common_watchlist = {
+                mid: users for mid, users in common_watchlist.items()
+                if mid in allowed_ids
+            }
+
         # Exclude movies already in Section A
         section_a_ids = {rec['movie_id'] for rec in section_a}
         common_watchlist = {
@@ -711,12 +784,29 @@ class StructuredOutputGenerator:
             users_sorted = sorted(users)
             explanation = f"Explicitly requested by member(s) {', '.join(map(str, users_sorted))}."
             
+            # Get full metadata
+            metadata = self._get_movie_metadata(movie_id)
+            
             section_b_output.append({
                 'movie_id': movie_id,
                 'title': title,
                 'users': users_sorted,
                 'explanation': explanation,
-                'signal_source': 'WATCHLIST'
+                'signal_source': 'WATCHLIST',
+                # Metadata fields
+                'genres': metadata.get('genres'),
+                'Overview': metadata.get('Overview'),
+                'overview': metadata.get('overview'),
+                'Director': metadata.get('Director'),
+                'director': metadata.get('director'),
+                'Actors': metadata.get('Actors'),
+                'actors': metadata.get('actors'),
+                'Production_Countries': metadata.get('Production_Countries'),
+                'production_countries': metadata.get('production_countries'),
+                'release_date': metadata.get('release_date'),
+                'poster_url': metadata.get('poster_url'),
+                'backdrop_url': metadata.get('backdrop_url'),
+                'trailer_url': metadata.get('trailer_url')
             })
         
         # Sort by number of users (descending)
@@ -730,9 +820,11 @@ class StructuredOutputGenerator:
     def _generate_section_c(self, group_users: List[int],
                            watched_set: Set[int],
                            section_a: List[Dict[str, Any]],
-                           section_b: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                           section_b: List[Dict[str, Any]],
+                           allowed_ids: Optional[Set[int]] = None) -> List[Dict[str, Any]]:
         """
         Generate shared interest themes section with ENHANCED diversity.
+        If allowed_ids is provided, ensure all recommended items match the global filter.
         """
         # Collect already recommended movie IDs
         excluded_ids = watched_set.copy()
@@ -753,7 +845,7 @@ class StructuredOutputGenerator:
         section_c_output = []
         for theme in selected_themes:
             theme_block = self._generate_theme_block_enhanced(
-                theme, group_users, excluded_ids
+                theme, group_users, excluded_ids, allowed_ids=allowed_ids
             )
             
             if theme_block:
@@ -930,8 +1022,9 @@ class StructuredOutputGenerator:
                 unique.append(t)
         return unique[:max_themes]
 
-    def _generate_theme_block_enhanced(self, theme, group_users, excluded_ids):
+    def _generate_theme_block_enhanced(self, theme, group_users, excluded_ids, allowed_ids: Optional[Set[int]] = None):
         # Find 3 candidate movies for this theme that are NOT in excluded
+        # AND are in allowed_ids (if set)
         candidates = []
         theme_val = theme['theme_value']
         theme_type = theme['theme_type']
@@ -958,11 +1051,34 @@ class StructuredOutputGenerator:
         rec_list = []
         for _, row in matches.iterrows():
             mid = row['movieId']
+            
+            # Global Filter Check
+            if allowed_ids is not None:
+                if mid not in allowed_ids:
+                    continue
+                    
             if mid not in excluded_ids:
+                # Get full metadata
+                metadata = self._get_movie_metadata(mid)
+                
                 rec_list.append({
                     'movie_id': mid,
                     'title': row['title'],
-                    'poster_path': row.get('poster_path', '') # Assuming column exists or frontend handles
+                    'poster_path': row.get('poster_path', ''),
+                    # Metadata fields
+                    'genres': metadata.get('genres'),
+                    'Overview': metadata.get('Overview'),
+                    'overview': metadata.get('overview'),
+                    'Director': metadata.get('Director'),
+                    'director': metadata.get('director'),
+                    'Actors': metadata.get('Actors'),
+                    'actors': metadata.get('actors'),
+                    'Production_Countries': metadata.get('Production_Countries'),
+                    'production_countries': metadata.get('production_countries'),
+                    'release_date': metadata.get('release_date'),
+                    'poster_url': metadata.get('poster_url'),
+                    'backdrop_url': metadata.get('backdrop_url'),
+                    'trailer_url': metadata.get('trailer_url')
                 })
                 if len(rec_list) >= 3: break
         
@@ -998,3 +1114,24 @@ class StructuredOutputGenerator:
                 self.movies_df['movieId'] == movie_id
             ]['title'].values[0]
         return f"Unknown Movie ({movie_id})"
+    
+    def _get_movie_metadata(self, movie_id: int) -> Dict[str, Any]:
+        """
+        Get full metadata for a movie from movies_df.
+        Returns all available fields including TMDB data.
+        """
+        if movie_id not in self.movies_df['movieId'].values:
+            return {}
+        
+        row = self.movies_df[self.movies_df['movieId'] == movie_id].iloc[0]
+        
+        # Convert row to dict and handle NaN values
+        metadata = {}
+        for col in row.index:
+            val = row[col]
+            if pd.notna(val):
+                metadata[col] = val
+            else:
+                metadata[col] = None
+        
+        return metadata
