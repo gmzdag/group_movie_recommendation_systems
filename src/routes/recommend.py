@@ -21,11 +21,14 @@ class GroupRecommendationRequest(BaseModel):
     top_k: int = 10
 
 
-# NEW: Updated to match full 3-section output
+# NEW: Updated to match full 6-section output
 class GroupRecommendationResponse(BaseModel):
     section_a_top_recommendations: List[Dict[str, Any]]
     section_b_common_watchlist: List[Dict[str, Any]]
     section_c_shared_interests: List[Dict[str, Any]]
+    section_d_watchlist_inspired: List[Dict[str, Any]]
+    section_e_hybrid1_picks: List[Dict[str, Any]]
+    section_f_hybrid2_picks: List[Dict[str, Any]]
 
 
 # Global models cache to avoid reloading

@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from typing import List, Dict, Any, Set, Tuple, Optional
 from collections import Counter
+from sklearn.metrics.pairwise import cosine_similarity
 from src.recommender.temporal_preference_analyzer import TemporalPreferenceAnalyzer
 
 try:
@@ -152,6 +153,24 @@ class StructuredOutputGenerator:
             allowed_ids=valid_ids_set
         )
         
+        # Section D (Apply global filter if valid_ids_set exists)
+        section_d = self._generate_section_d(
+            group_users, watched_set, section_a, section_b,
+            allowed_ids=valid_ids_set
+        )
+        
+        # Section E - Hybrid 1 specific recommendations
+        section_e = self._generate_section_e(
+            group_users, watched_set, section_a, section_b, section_d,
+            allowed_ids=valid_ids_set
+        )
+        
+        # Section F - Hybrid 2 specific recommendations
+        section_f = self._generate_section_f(
+            group_users, watched_set, section_a, section_b, section_d,
+            allowed_ids=valid_ids_set
+        )
+        
         # ============================================================================
         # TMDB ENRICHMENT: Add poster/backdrop/trailer URLs
         # ============================================================================
@@ -182,6 +201,27 @@ class StructuredOutputGenerator:
                     'title': movie['title']
                 })
         
+        # Section D movies
+        for item in section_d:
+            all_movies.append({
+                'movie_id': item['movie_id'],
+                'title': item['title']
+            })
+        
+        # Section E movies
+        for item in section_e:
+            all_movies.append({
+                'movie_id': item['movie_id'],
+                'title': item['title']
+            })
+        
+        # Section F movies
+        for item in section_f:
+            all_movies.append({
+                'movie_id': item['movie_id'],
+                'title': item['title']
+            })
+        
         # Remove duplicates (keep unique movie_ids)
         unique_movies = {m['movie_id']: m for m in all_movies}.values()
         
@@ -211,10 +251,25 @@ class StructuredOutputGenerator:
             for movie in theme.get('recommended_movies', []):
                 movie.update(tmdb_lookup.get(movie['movie_id'], {}))
         
+        # Add TMDB data to Section D
+        for item in section_d:
+            item.update(tmdb_lookup.get(item['movie_id'], {}))
+        
+        # Add TMDB data to Section E
+        for item in section_e:
+            item.update(tmdb_lookup.get(item['movie_id'], {}))
+        
+        # Add TMDB data to Section F
+        for item in section_f:
+            item.update(tmdb_lookup.get(item['movie_id'], {}))
+        
         return {
             'section_a_top_recommendations': section_a,
             'section_b_common_watchlist': section_b,
-            'section_c_shared_interests': section_c
+            'section_c_shared_interests': section_c,
+            'section_d_watchlist_inspired': section_d,
+            'section_e_hybrid1_picks': section_e,
+            'section_f_hybrid2_picks': section_f
         }
     
     # ========================================================================
@@ -444,78 +499,64 @@ class StructuredOutputGenerator:
     
         # --- STANDARD PATH ---
         
-        print("\n[SECTION A] Using MULTI-MODEL selection strategy (Standard)")
+        print("\n[SECTION A] Using QUOTA-BASED MIXED ENSEMBLE strategy")
         
-        # Calculate quota allocation
-        quota = self._calculate_quota_allocation(total_slots=10)
+        # 1. Calculate how many slots each model gets (e.g., 4-3-3)
+        quotas = self._calculate_quota_allocation(total_slots=10)
+        print(f"[SECTION A] Slot allocation: {quotas}")
         
-        # Generate candidates from each model
-        model_candidates = {}
+        # 2. Get candidates for Section A
+        candidates = self._get_candidates_for_section_a(
+            group_users, watched_set, direct_watchlist_set
+        )
         
-        for model_key in ['h1', 'h2', 'h3']:
-            model = getattr(self, model_key)
+        if not candidates:
+            return []
             
-            # Get candidates (same logic as original)
-            candidates = self._get_candidates_for_section_a(
-                group_users, watched_set, direct_watchlist_set
-            )
-            
-            if not candidates:
-                model_candidates[model_key] = []
-                continue
-            
-            # Request more than quota to allow filtering
-            request_k = quota[model_key] * 3
-            
-            try:
-                recs = model.recommend_for_group(
-                    group_users, candidates, top_k=request_k
-                )
-                
-                # Filter out direct watchlist matches
-                filtered_recs = []
-                for rec in recs:
-                    if rec['movie_id'] not in direct_watchlist_set:
-                        # Add source model attribution
-                        rec['source_model'] = model_key.upper()
-                        filtered_recs.append(rec)
-                
-                model_candidates[model_key] = filtered_recs
-                
-            except Exception as e:
-                print(f"[WARNING] {model_key.upper()} failed: {e}")
-                model_candidates[model_key] = []
+        # 3. Collect top picks from each model based on their quota
+        combined_picks = []
+        seen_mids = set()
         
-        # Select top films from each model according to quota
-        final_recommendations = []
-        used_movie_ids = set()
-        
-        for model_key in ['h1', 'h2', 'h3']:
-            quota_for_model = quota[model_key]
-            candidates = model_candidates[model_key]
+        # We iterate through models to fill the slots
+        for m_key, quota in quotas.items():
+            model = getattr(self, m_key)
+            m_label = m_key.upper()
             
-            selected_count = 0
-            for rec in candidates:
-                if selected_count >= quota_for_model:
-                    break
-                
-                # Skip if already selected by another model
-                if rec['movie_id'] in used_movie_ids:
-                    continue
-                
-                # Add to final list
-                final_recommendations.append(rec)
-                used_movie_ids.add(rec['movie_id'])
-                selected_count += 1
+            # Request more than quota to handle duplicates from previous models
+            model_recs = model.recommend_for_group(group_users, candidates, top_k=quota + 5)
+            
+            added_from_this_model = 0
+            for rec in model_recs:
+                mid = rec['movie_id']
+                if mid not in seen_mids and added_from_this_model < quota:
+                    rec['source_model'] = m_label
+                    combined_picks.append(rec)
+                    seen_mids.add(mid)
+                    added_from_this_model += 1
         
-        # Sort by score (descending)
-        final_recommendations.sort(key=lambda x: x['score'], reverse=True)
-        
-        # Format output
+        # 4. Fill remaining slots if any (due to low candidates or high overlap)
+        if len(combined_picks) < 10:
+            remaining = 10 - len(combined_picks)
+            # Fallback to Hybrid 1 (most stable) for extra picks
+            extra_recs = self.h1.recommend_for_group(group_users, candidates, top_k=20)
+            for rec in extra_recs:
+                mid = rec['movie_id']
+                if mid not in seen_mids and len(combined_picks) < 10:
+                    rec['source_model'] = 'H1_EXTRA'
+                    combined_picks.append(rec)
+                    seen_mids.add(mid)
+
+        # NEW: Global Re-sort of the mixed ensemble to ensure highest scores are on top
+        combined_picks.sort(key=lambda x: x['score'], reverse=True)
+
+        # 5. Format results
         section_a_output = []
-        for rec in final_recommendations[:10]:
+        for rec in combined_picks:
             movie_id = rec['movie_id']
             title = self._get_movie_title(movie_id)
+            
+            # Use model-provided explanation or fallback
+            group_expl = rec.get('group_explanation', 'High-match recommendation based on group tastes.')
             
             # Filter explanations (no direct watchlist)
             user_explanations = {}
@@ -540,7 +581,7 @@ class StructuredOutputGenerator:
                 'group_score': round(rec['score'], 2),
                 'source_model': rec['source_model'],
                 'model_score': round(rec['score'], 2),
-                'group_explanation': rec['group_explanation'],
+                'group_explanation': group_expl,
                 'signal_source': self._get_dominant_signal_source(user_explanations),
                 'user_explanations': user_explanations,
                 # Metadata fields
@@ -676,10 +717,23 @@ class StructuredOutputGenerator:
             ]['movieId'].tolist()
             
             for wl_movie in user_wl:
+                # 2a. Collaborative neighbors (IBCF)
                 if hasattr(self.h1.ib_model, 'neighbors'):
                     neighbors_dict = self.h1.ib_model.neighbors.get(wl_movie, {})
                     similar_movies = list(neighbors_dict.keys())[:5]
                     candidates.update([m for m in similar_movies if m != wl_movie])
+                
+                # 2b. Content neighbors (CBF) - NEW: Matches logic in Section D
+                if wl_movie in self.h3.cb_model.movie_to_idx:
+                    wl_idx = self.h3.cb_model.movie_to_idx[wl_movie]
+                    wl_vec = self.h3.cb_model.tfidf_matrix[wl_idx]
+                    all_sims = cosine_similarity(wl_vec, self.h3.cb_model.tfidf_matrix).flatten()
+                    top_indices = np.argsort(all_sims)[-11:-1][::-1] # Get top 10
+                    
+                    idx_to_movie_temp = {v: k for k, v in self.h3.cb_model.movie_to_idx.items()}
+                    for idx in top_indices:
+                        if idx in idx_to_movie_temp:
+                             candidates.add(idx_to_movie_temp[idx])
         
         # 3. Popular baseline
         popular = self.cf_matrix.count().sort_values(
@@ -1100,13 +1154,32 @@ class StructuredOutputGenerator:
             if uid in self.cf_matrix.index:
                 user_ratings = self.cf_matrix.loc[uid].dropna()
                 watched.update(user_ratings.index.tolist())
+                print(f"[WATCHED] User {uid}: {len(user_ratings)} movies watched")
+            else:
+                print(f"[WATCHED] User {uid}: NOT FOUND in cf_matrix")
+        print(f"[WATCHED] Total watched movies in group: {len(watched)}")
         return watched
     
     def _get_direct_watchlist_set(self, group_users: List[int]) -> Set[int]:
+        """
+        Returns only SHARED watchlist items (movies in 2+ users' watchlists).
+        Individual watchlist items (1 user only) are NOT excluded from Top 10,
+        as they represent valid recommendations for other group members.
+        """
         wl_subset = self.watchlist_df[
             self.watchlist_df['userId'].isin(group_users)
         ]
-        return set(wl_subset['movieId'].unique())
+        
+        # Count how many users have each movie in their watchlist
+        movie_user_counts = wl_subset.groupby('movieId')['userId'].nunique()
+        
+        # Only return movies that appear in 2+ users' watchlists
+        shared_watchlist = set(movie_user_counts[movie_user_counts >= 2].index)
+        
+        print(f"[WATCHLIST] Total watchlist items: {len(wl_subset['movieId'].unique())}")
+        print(f"[WATCHLIST] Shared items (2+ users): {len(shared_watchlist)}")
+        
+        return shared_watchlist
         
     def _get_movie_title(self, movie_id: int) -> str:
         if movie_id in self.movies_df['movieId'].values:
@@ -1125,6 +1198,7 @@ class StructuredOutputGenerator:
         
         row = self.movies_df[self.movies_df['movieId'] == movie_id].iloc[0]
         
+        
         # Convert row to dict and handle NaN values
         metadata = {}
         for col in row.index:
@@ -1135,3 +1209,266 @@ class StructuredOutputGenerator:
                 metadata[col] = None
         
         return metadata
+    
+    # ========================================================================
+    # SECTION D: WATCHLIST-INSPIRED RECOMMENDATIONS
+    # ========================================================================
+    
+    def _generate_section_d(self, group_users: List[int],
+                           watched_set: Set[int],
+                           section_a: List[Dict[str, Any]],
+                           section_b: List[Dict[str, Any]],
+                           allowed_ids: Optional[Set[int]] = None) -> List[Dict[str, Any]]:
+        """
+        Generate watchlist-inspired recommendations using Hybrid Model 3.
+        These are NEW movies similar to watchlist items (not the watchlist items themselves).
+        """
+        # Get all watchlist movies for the group
+        wl_subset = self.watchlist_df[
+            self.watchlist_df['userId'].isin(group_users)
+        ]
+        
+        watchlist_movies = set(wl_subset['movieId'].unique())
+        
+        # Exclude watched and already recommended movies
+        excluded_ids = watched_set.copy()
+        excluded_ids.update({rec['movie_id'] for rec in section_a})
+        excluded_ids.update({item['movie_id'] for item in section_b})
+        excluded_ids.update(watchlist_movies)  # Don't recommend watchlist items themselves
+        
+        # Get candidates similar to watchlist items
+        # Use content-based similarity from H3's cb_model
+        candidates = set()
+        
+        for wl_movie in watchlist_movies:
+            # Get similar movies using content-based model
+            if wl_movie in self.h3.cb_model.movie_to_idx:
+                wl_idx = self.h3.cb_model.movie_to_idx[wl_movie]
+                wl_vec = self.h3.cb_model.tfidf_matrix[wl_idx]
+                
+                # Calculate similarity with all movies
+                all_sims = cosine_similarity(wl_vec, self.h3.cb_model.tfidf_matrix).flatten()
+                
+                # Get top 20 similar movies
+                top_indices = np.argsort(all_sims)[-21:-1][::-1]  # Exclude self
+                
+                # Create reverse mapping for this iteration
+                idx_to_movie = {v: k for k, v in self.h3.cb_model.movie_to_idx.items()}
+                
+                for idx in top_indices:
+                    if idx in idx_to_movie:
+                        similar_movie_id = idx_to_movie[idx]
+                        if similar_movie_id not in excluded_ids:
+                            candidates.add(similar_movie_id)
+        
+        if not candidates:
+            return []
+        
+        # Use Hybrid Model 3 to rank these candidates
+        try:
+            recommendations = self.h3.recommend_for_group(
+                group_users, list(candidates), top_k=10
+            )
+        except Exception as e:
+            print(f"[SECTION D] H3 recommendation failed: {e}")
+            return []
+        
+        # Apply global filter if provided
+        if allowed_ids is not None:
+            recommendations = [
+                rec for rec in recommendations 
+                if rec['movie_id'] in allowed_ids
+            ]
+        
+        # Build output
+        section_d_output = []
+        for rec in recommendations[:10]:
+            movie_id = rec['movie_id']
+            title = self._get_movie_title(movie_id)
+            
+            # Get metadata
+            metadata = self._get_movie_metadata(movie_id)
+            
+            # Create explanation
+            explanation = f"Recommended based on your group's watchlist preferences."
+            
+            section_d_output.append({
+                'movie_id': movie_id,
+                'title': title,
+                'group_score': round(rec['score'], 2),
+                'explanation': explanation,
+                'signal_source': 'WATCHLIST_INSPIRED',
+                'source_model': 'H3',
+                # Metadata fields
+                'genres': metadata.get('genres'),
+                'Overview': metadata.get('Overview'),
+                'overview': metadata.get('overview'),
+                'Director': metadata.get('Director'),
+                'director': metadata.get('director'),
+                'Actors': metadata.get('Actors'),
+                'actors': metadata.get('actors'),
+                'Production_Countries': metadata.get('Production_Countries'),
+                'production_countries': metadata.get('production_countries'),
+                'release_date': metadata.get('release_date'),
+                'poster_url': metadata.get('poster_url'),
+                'backdrop_url': metadata.get('backdrop_url'),
+                'trailer_url': metadata.get('trailer_url')
+            })
+        
+        return section_d_output
+    
+    # ========================================================================
+    # SECTION E: HYBRID 1 SPECIFIC RECOMMENDATIONS
+    # ========================================================================
+    
+    def _generate_section_e(self, group_users: List[int],
+                           watched_set: Set[int],
+                           section_a: List[Dict[str, Any]],
+                           section_b: List[Dict[str, Any]],
+                           section_d: List[Dict[str, Any]],
+                           allowed_ids: Optional[Set[int]] = None) -> List[Dict[str, Any]]:
+        """
+        Generate Hybrid Model 1 specific recommendations.
+        Focus on collaborative filtering and similar taste patterns.
+        """
+        # Exclude already recommended movies
+        excluded_ids = watched_set.copy()
+        excluded_ids.update({rec['movie_id'] for rec in section_a})
+        excluded_ids.update({item['movie_id'] for item in section_b})
+        excluded_ids.update({item['movie_id'] for item in section_d})
+        
+        # Get candidates
+        candidates = self._get_candidates_for_section_a(
+            group_users, watched_set, set()
+        )
+        
+        # Filter out excluded
+        candidates = [c for c in candidates if c not in excluded_ids]
+        
+        if not candidates:
+            return []
+        
+        # Use Hybrid Model 1
+        try:
+            recommendations = self.h1.recommend_for_group(
+                group_users, candidates, top_k=10
+            )
+        except Exception as e:
+            print(f"[SECTION E] H1 recommendation failed: {e}")
+            return []
+        
+        # Apply global filter if provided
+        if allowed_ids is not None:
+            recommendations = [
+                rec for rec in recommendations 
+                if rec['movie_id'] in allowed_ids
+            ]
+        
+        # Build output
+        section_e_output = []
+        for rec in recommendations[:10]:
+            movie_id = rec['movie_id']
+            title = self._get_movie_title(movie_id)
+            metadata = self._get_movie_metadata(movie_id)
+            
+            section_e_output.append({
+                'movie_id': movie_id,
+                'title': title,
+                'group_score': round(rec['score'], 2),
+                'explanation': "Because you have similar tastes.",
+                'signal_source': 'COLLABORATIVE',
+                'source_model': 'H1',
+                'genres': metadata.get('genres'),
+                'Overview': metadata.get('Overview'),
+                'overview': metadata.get('overview'),
+                'Director': metadata.get('Director'),
+                'director': metadata.get('director'),
+                'Actors': metadata.get('Actors'),
+                'actors': metadata.get('actors'),
+                'Production_Countries': metadata.get('Production_Countries'),
+                'production_countries': metadata.get('production_countries'),
+                'release_date': metadata.get('release_date'),
+                'poster_url': metadata.get('poster_url'),
+                'backdrop_url': metadata.get('backdrop_url'),
+                'trailer_url': metadata.get('trailer_url')
+            })
+        
+        return section_e_output
+    
+    # ========================================================================
+    # SECTION F: HYBRID 2 SPECIFIC RECOMMENDATIONS
+    # ========================================================================
+    
+    def _generate_section_f(self, group_users: List[int],
+                           watched_set: Set[int],
+                           section_a: List[Dict[str, Any]],
+                           section_b: List[Dict[str, Any]],
+                           section_d: List[Dict[str, Any]],
+                           allowed_ids: Optional[Set[int]] = None) -> List[Dict[str, Any]]:
+        """
+        Generate Hybrid Model 2 specific recommendations.
+        Adaptive strategy switching based on user profiles.
+        """
+        # Exclude already recommended movies
+        excluded_ids = watched_set.copy()
+        excluded_ids.update({rec['movie_id'] for rec in section_a})
+        excluded_ids.update({item['movie_id'] for item in section_b})
+        excluded_ids.update({item['movie_id'] for item in section_d})
+        
+        # Get candidates
+        candidates = self._get_candidates_for_section_a(
+            group_users, watched_set, set()
+        )
+        
+        # Filter out excluded
+        candidates = [c for c in candidates if c not in excluded_ids]
+        
+        if not candidates:
+            return []
+        
+        # Use Hybrid Model 2
+        try:
+            recommendations = self.h2.recommend_for_group(
+                group_users, candidates, top_k=10
+            )
+        except Exception as e:
+            print(f"[SECTION F] H2 recommendation failed: {e}")
+            return []
+        
+        # Apply global filter if provided
+        if allowed_ids is not None:
+            recommendations = [
+                rec for rec in recommendations 
+                if rec['movie_id'] in allowed_ids
+            ]
+        
+        # Build output
+        section_f_output = []
+        for rec in recommendations[:10]:
+            movie_id = rec['movie_id']
+            title = self._get_movie_title(movie_id)
+            metadata = self._get_movie_metadata(movie_id)
+            
+            section_f_output.append({
+                'movie_id': movie_id,
+                'title': title,
+                'group_score': round(rec['score'], 2),
+                'explanation': "Adaptive recommendation based on your profiles.",
+                'signal_source': 'ADAPTIVE',
+                'source_model': 'H2',
+                'genres': metadata.get('genres'),
+                'Overview': metadata.get('Overview'),
+                'overview': metadata.get('overview'),
+                'Director': metadata.get('Director'),
+                'director': metadata.get('director'),
+                'Actors': metadata.get('Actors'),
+                'actors': metadata.get('actors'),
+                'Production_Countries': metadata.get('Production_Countries'),
+                'production_countries': metadata.get('production_countries'),
+                'release_date': metadata.get('release_date'),
+                'poster_url': metadata.get('poster_url'),
+                'backdrop_url': metadata.get('backdrop_url'),
+                'trailer_url': metadata.get('trailer_url')
+            })
+        
+        return section_f_output

@@ -180,12 +180,13 @@ function GroupCreation() {
             // Detailed logging for Trust Mode
             console.log('✨ Trust Mode Results:', data);
 
-            // TODO: Show recommendation in a results modal
-            setIsLoading(false);
             // Result handling
             setIsLoading(false);
             // Navigate to results page
-            navigate('/results', { state: { results: data, mode: 'trust' } });
+            const userMap = Object.fromEntries(
+                groupMembers.map(m => [m.user_id, m.username])
+            );
+            navigate('/results', { state: { results: data, mode: 'trust', userMap } });
 
 
         } catch (error) {
@@ -224,10 +225,11 @@ function GroupCreation() {
 
             // TODO: Show recommendation in a results modal
             setIsLoading(false);
-            // Result handling
-            setIsLoading(false);
             // Navigate to results page
-            navigate('/results', { state: { results: data, userPrompt: prompt, mode: 'guided' } });
+            const userMap = Object.fromEntries(
+                groupMembers.map(m => [m.user_id, m.username])
+            );
+            navigate('/results', { state: { results: data, userPrompt: prompt, mode: 'guided', userMap } });
 
 
         } catch (error) {

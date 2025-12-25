@@ -11,7 +11,7 @@ except ImportError as e:
     print(f"Error importing recommender: {e}")
 
 from recommender.data_loader import load_movies, load_ratings, load_watchlists
-from recommender.watchlist.group_watchlist_recommender import GroupWatchlistRecommender
+from recommender.watchlist.watchlist_recommender import WatchlistRecommender
 
 def print_recommendations(result):
     titles = result["movie_titles"]
@@ -54,7 +54,7 @@ def main():
     watchlists = load_watchlists()
     
     print("[2] Initializing Recommender (Training Content Model)...")
-    recommender = GroupWatchlistRecommender(movies, ratings, watchlists)
+    recommender = WatchlistRecommender(movies, ratings, watchlists)
     
     print("[3] Generating Recommendations...")
     try:

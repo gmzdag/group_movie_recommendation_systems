@@ -9,66 +9,85 @@ from src.recommender.CB.content_based import ContentBasedModel
 
 class SwitchingHybridRecommender:
     """
-    Switching Hybrid Recommender System.
+    Hybrid Model 2: UBCF + CBF with Optimized Performance-Weighted Strategy
     
-    Strategy:
-    1. Primary: User-Based Collaborative Filtering (UBCF)
-       - Used when the user has enough history and neighbors.
+    DEFAULT STRATEGY: Performance-Weighted (w_ubcf=0.10, w_cbf=0.90)
+    - Test NDCG@10: 0.288 (Group Recommendations)
+    - Optimized via group-level validation
     
-    2. Fallback (Switch): Content-Based Filtering (CBF)
-       - Used when UBCF fails (Cold Start, no neighbors, or prediction impossible).
-       
-    This handles the Cold Start problem effectively by leveraging item metadata
-    when user interaction data is sparse.
+    ALTERNATIVE: Binary Switching (for comparison/ablation studies)
+    
+    References:
+    - experiments/hybrid2_group_optimization.py
+    - experiments/hybrid_models_test_evaluation.py
     """
     
-    def __init__(self, ubcf_model: UserBasedCF, cbf_model: ContentBasedModel):
+    def __init__(self, ubcf_model: UserBasedCF, cbf_model: ContentBasedModel, 
+                 strategy: str = 'performance_weighted',
+                 neighbor_threshold: int = 30,
+                 w_ubcf: float = 0.10,
+                 w_cbf: float = 0.90):
+        """
+        Args:
+            ubcf_model: User-Based Collaborative Filtering model
+            cbf_model: Content-Based Filtering model  
+            strategy: 'performance_weighted' (default, optimal) or 'switching'
+            neighbor_threshold: For switching - min neighbors to use UBCF (default: 30)
+            w_ubcf: UBCF weight for performance_weighted (default: 0.05)
+            w_cbf: CBF weight for performance_weighted (default: 0.95)
+        """
         self.ubcf = ubcf_model
         self.cbf = cbf_model
+        self.strategy = strategy
+        self.neighbor_threshold = neighbor_threshold
+        self.w_ubcf = w_ubcf
+        self.w_cbf = w_cbf
         
     def predict(self, user_id: int, movie_id: int) -> Tuple[float, str]:
         """
-        Predict rating using Switching strategy.
+        Predict rating using configured strategy.
         Returns: (score, source_method)
         """
-        # Try UBCF first
-        try:
-            # We assume UBCF returns a valid score or global mean
-            # To detect if it 'failed' (e.g. returned global mean due to no neighbors),
-            # we might need to check internal state or assume global_mean implies weakness.
-            # But strictly speaking, UBCF methods usually handle this gracefully.
-            # Let's verify simply: if user has no neighbors, switch.
+        if self.strategy == 'performance_weighted':
+            # OPTIMAL: Weighted combination
+            try:
+                ubcf_pred = self.ubcf.predict(user_id, movie_id)
+            except:
+                ubcf_pred = np.nan
             
-            # Check for Cold Start / No Neighbors in UBCF
-            if user_id not in self.ubcf.neighbors or not self.ubcf.neighbors[user_id]:
-                raise ValueError("No neighbors (Cold Start)")
+            cbf_pred = self.cbf.predict_rating(user_id, movie_id)
+            
+            if np.isnan(ubcf_pred) and np.isnan(cbf_pred):
+                return self.ubcf.global_mean, "GlobalMean"
+            elif np.isnan(ubcf_pred):
+                return cbf_pred, "CBF_only"
+            elif np.isnan(cbf_pred):
+                return ubcf_pred, "UBCF_only"
+            
+            # Weighted combination
+            score = self.w_ubcf * ubcf_pred + self.w_cbf * cbf_pred
+            return score, f"Weighted({self.w_ubcf:.2f}/{self.w_cbf:.2f})"
+        
+        else:  # Binary switching
+            try:
+                if user_id not in self.ubcf.neighbors or len(self.ubcf.neighbors.get(user_id, {})) < self.neighbor_threshold:
+                    raise ValueError(f"Insufficient neighbors")
+                    
+                prediction = self.ubcf.predict(user_id, movie_id)
+                return prediction, "UBCF"
                 
-            prediction = self.ubcf.predict(user_id, movie_id)
-            
-            # If UBCF fell back to global mean but we wanted more personalization, 
-            # we could verify if prediction == global_mean. But let's trust UBCF logic for now.
-            return prediction, "UBCF"
-            
-        except (KeyError, ValueError):
-            # Switch to Content-Based
-            # CBF uses user profile constructed from their limited ratings (if any)
-            # If user has absolutely 0 ratings, CBF might return global mean too.
-            cbf_score = self.cbf.predict_rating(user_id, movie_id)
-            
-            if np.isnan(cbf_score):
-                return self.ubcf.global_mean, "GlobalMean" # Both failed
+            except (KeyError, ValueError):
+                cbf_score = self.cbf.predict_rating(user_id, movie_id)
                 
-            return cbf_score, "CBF"
+                if np.isnan(cbf_score):
+                    return self.ubcf.global_mean, "GlobalMean"
+                    
+                return cbf_score, "CBF"
 
     def recommend(self, user_id: int, top_n: int = 10) -> pd.DataFrame:
-        """
-        Generate recommendations for a single user using the best available method.
-        """
-        # 1. Candidate Generation
-        # Get all movies
+        """Generate recommendations for single user."""
         all_movies = self.ubcf.R.columns
         
-        # Exclude watched
         if user_id in self.ubcf.R.index:
             rated_movies = self.ubcf.R.loc[user_id].dropna().index
         else:
@@ -77,132 +96,59 @@ class SwitchingHybridRecommender:
         candidates = [m for m in all_movies if m not in rated_movies]
         
         results = []
-        
-        # 2. Prediction Loop
-        # We determine the method ONCE for the user to stay consistent, 
-        # or per item? Switching usually implies User-Level switching.
-        
-        method = "UBCF"
-        if user_id not in self.ubcf.neighbors or not self.ubcf.neighbors[user_id]:
-            method = "CBF"
-        
-        # If we selected CBF because of cold start, check if we can even build a profile
-        if method == "CBF":
-            # Check if user has ANY ratings for CBF
-            user_hist = self.cbf.ratings_df[self.cbf.ratings_df['userId'] == user_id]
-            if user_hist.empty:
-                method = "POPULARITY" # Complete Cold Start
-        
         for mid in candidates:
-            score = 0.0
-            used_method = method
-            
-            if method == "UBCF":
-                score = self.ubcf.predict(user_id, mid)
-            elif method == "CBF":
-                score = self.cbf.predict_rating(user_id, mid)
-                if np.isnan(score):
-                    score = self.ubcf.global_mean
-            else:
-                # Popularity fallback (using item means from UBCF)
-                score = self.ubcf.item_means.get(mid, self.ubcf.global_mean)
-            
+            score, method = self.predict(user_id, mid)
             results.append({
                 "movieId": mid,
                 "score": score,
-                "method": used_method
+                "method": method
             })
             
-        # 3. Sort and Return
         results.sort(key=lambda x: x["score"], reverse=True)
-        top_results = results[:top_n]
-        
-        return pd.DataFrame(top_results)
+        return pd.DataFrame(results[:top_n])
 
-
-
-    def recommend_for_group(self, group_users: List[int], candidates: List[int], top_k: int = 10, alpha: float = 0.5) -> List[Dict]:
+    def recommend_for_group(self, group_users: List[int], candidates: List[int], 
+                           top_k: int = 10, alpha: float = 0.5) -> List[Dict]:
         """
-        Alias for recommend_group to match HybridModel1 interface.
-        Returns list of dicts instead of DF.
+        Group recommendation using configured strategy.
+        Returns list of dicts for ensemble compatibility.
         """
-        # Call internal method (adapted)
-        # SwitchingHybrid recommend_group signature: (group_users, top_n, alpha)
-        # It returns DataFrame. We need List[Dict] to match Ensemble expectation.
+        group_scores = []
         
-        # Adaptation:
-        df = self.recommend_group(group_users, top_n=top_k, candidates=candidates)
+        for mid in candidates:
+            member_scores = []
+            
+            for uid in group_users:
+                try:
+                    score, method = self.predict(uid, mid)
+                    if not np.isnan(score):
+                        member_scores.append(score)
+                except:
+                    pass
+            
+            if member_scores:
+                avg_score = np.mean(member_scores)
+                group_scores.append((mid, avg_score))
         
-        # Convert to list of dicts
+        group_scores.sort(key=lambda x: x[1], reverse=True)
+        top_items = group_scores[:top_k]
+        
         results = []
-        for idx, row in df.iterrows():
+        for mid, score in top_items:
             results.append({
-                'movie_id': row['movieId'],
-                'score': row['score'],
-                'group_explanation': "Switching Hybrid Result", # Hybrid 2 doesn't retain explanation detail
-                'explanations': {} 
+                'movie_id': mid,
+                'score': score,
+                'group_explanation': 'Aligns with the common tastes and shared movie preferences of the group.',
+                'explanations': {}
             })
+        
         return results
-
-    def explain(self, user_id: int, movie_id: int) -> Dict[str, Any]:
-        """
-        Generates explanation signals for Switching Hybrid.
-        Checks which method (UBCF/CBF) would be active for this user/item.
-        """
-        from src.recommender.explanation_engine import ExplanationEngine
-        
-        signals = []
-        
-        # Determine likely method (logic mirrors predict loop)
-        method = "UBCF"
-        if user_id not in self.ubcf.neighbors or not self.ubcf.neighbors[user_id]:
-            method = "CBF"
-            
-        if method == "UBCF":
-            # UBCF Signal
-            # We don't have detailed "Similar User" names usually (privacy/system design),
-            # but we can say "Popular among similar users".
-            # Strength? Use prediction vs global mean gap?
-            # Or just neighbor count confidence.
-            
-            n_count = len(self.ubcf.neighbors.get(user_id, {}))
-            strength = 0.8 if n_count > 10 else 0.5
-            
-            signals.append({
-                'source': 'UBCF',
-                'strength': strength,
-                'context_items': [],
-                'features': []
-            })
-            
-        else:
-            # CBF Signal
-            # Fallback to CB logic (similar to Hybrid 1 but maybe simpler here)
-            # Re-use CB model to find match
-             try:
-                # Reuse the logic from Hybrid 1 via CB model helper if available?
-                # Or just basic checks.
-                # Let's assume CBF model has helper `get_shared_traits`
-                pass
-             except:
-                pass
-             
-             signals.append({
-                'source': 'CBF',
-                'strength': 0.4, # Fallback is usually weaker confidence
-                'context_items': [],
-                'features': []
-             })
-             
-        return ExplanationEngine.generate_explanation(signals)
     
-    def recommend_group(self, group_users: List[int], top_n: int = 10, candidates: List[int] = None) -> pd.DataFrame:
+    def recommend_group(self, group_users: List[int], top_n: int = 10, 
+                       candidates: List[int] = None) -> pd.DataFrame:
         """
-        Group Recommendation using True Switching Strategy.
-        For each user, we determine the best model (UBCF or CBF) based on data availability,
-        then predict the score. Finally, we aggregate these scores for the group.
+        Legacy group recommendation (returns DataFrame).
         """
-        # Exclude if *any* member watched it
         if candidates is None:
             all_watched = set()
             for uid in group_users:
@@ -218,53 +164,44 @@ class SwitchingHybridRecommender:
             member_scores = []
             
             for uid in group_users:
-                score = 0.0
-                method_used = "UBCF"
-                
-                # Check for Neighbors (Switching Condition)
-                # If user has sufficient neighbors, we trust UBCF (Collaborative).
-                # Otherwise, we switch to CBF (Content-Based) to handle Cold Start / Sparsity.
-                has_neighbors = (uid in self.ubcf.neighbors and len(self.ubcf.neighbors[uid]) > 0)
-                
-                if has_neighbors:
-                    try:
-                        pred = self.ubcf.predict(uid, mid)
-                        score = pred
-                    except:
-                        # Fallback to CBF if UBCF fails technically
-                        score = self.cbf.predict_rating(uid, mid)
-                        method_used = "CBF"
-                else:
-                    # Cold Start: Switch to Content-Based
-                    score = self.cbf.predict_rating(uid, mid)
-                    method_used = "CBF"
-                
-                if np.isnan(score):
-                    score = self.ubcf.global_mean
-                    method_used = "GlobalMean"
-                    
-                member_scores.append(score)
+                try:
+                    score, method = self.predict(uid, mid)
+                    if not np.isnan(score):
+                        member_scores.append(score)
+                except:
+                    pass
             
-            # Aggregation: MEAN STRATEGY
-            avg_score = np.mean(member_scores)
-            
-            group_scores.append({
-                "movieId": mid,
-                "score": avg_score
-            })
-            
-        # Sort
-        group_scores.sort(key=lambda x: x["score"], reverse=True)
-        top_items = group_scores[:top_n]
+            if member_scores:
+                avg_score = np.mean(member_scores)
+                group_scores.append({"movieId": mid, "score": avg_score})
         
-        results_df = pd.DataFrame(top_items)
-        if not results_df.empty and self.ubcf.movies is not None:
-             if 'movieId' in self.ubcf.movies.columns:
-                 title_map = self.ubcf.movies.set_index('movieId')['title']
-             else:
-                 title_map = self.ubcf.movies['title']
-                 
-             title_map = self.ubcf.movies.set_index('movieId')['title']
-             results_df['title'] = results_df['movieId'].map(title_map)
-             
-        return results_df
+        group_scores.sort(key=lambda x: x["score"], reverse=True)
+        
+        return pd.DataFrame(group_scores[:top_n])
+
+    def explain(self, user_id: int, movie_id: int) -> Dict[str, Any]:
+        """Generate explanation for prediction."""
+        from src.recommender.explanation_engine import ExplanationEngine
+        
+        signals = []
+        score, method = self.predict(user_id, movie_id)
+        
+        if 'UBCF' in method:
+            n_count = len(self.ubcf.neighbors.get(user_id, {}))
+            strength = min(1.0, n_count / 50.0)
+            signals.append({
+                'source': 'UBCF',
+                'strength': strength,
+                'context_items': [],
+                'features': []
+            })
+        
+        if 'CBF' in method or self.strategy == 'performance_weighted':
+            signals.append({
+                'source': 'CBF',
+                'strength': self.w_cbf if self.strategy == 'performance_weighted' else 1.0,
+                'context_items': [],
+                'features': []
+            })
+        
+        return ExplanationEngine.generate_explanation(signals)
