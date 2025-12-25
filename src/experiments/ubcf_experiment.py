@@ -241,7 +241,8 @@ if __name__ == "__main__":
     val_df["rating"] = val_df["rating"].astype(float)
     
     # Build R_train
-    print("    Building R_train matrix...")
+    print("    K_VALUES = [20, 50]
+    OVERLAP_VALUES = [5, 10] # Reduced minimum overlap to solve sparsity    Building R_train matrix...")
     R_train = train_df.pivot(index="userId", columns="movieId", values="rating")
     
     # Pre-calculate means
@@ -251,8 +252,7 @@ if __name__ == "__main__":
     
     # 2. Define Grid
     # ADJUSTED: Added '5' to overlap, '50' to neighbors to find a working setting
-    K_VALUES = [20, 50]
-    OVERLAP_VALUES = [5, 10] # Reduced minimum overlap to solve sparsity
+
     
     # Similarity Functions configuration
     # We use partials to bind specific params if needed
