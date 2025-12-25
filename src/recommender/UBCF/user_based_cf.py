@@ -89,6 +89,15 @@ class UserBasedCF:
         n_ids = list(n_map.keys())
         sims = np.array(list(n_map.values()))
         
+        # SAFETY: Filter neighbors to only those present in R.index
+        # This prevents KeyError when neighbors reference users not in training data
+        valid_mask = [nid in self.R.index for nid in n_ids]
+        n_ids_valid = [nid for nid, valid in zip(n_ids, valid_mask) if valid]
+        sims_valid = sims[valid_mask]
+        
+        if not n_ids_valid:
+            return {}
+        
         # Get dense block for neighbors (Neighbors x AllItems)
         # Using self.R (pd.DataFrame). 
         # Slicing row-wise ok for typical frame.
@@ -99,32 +108,32 @@ class UserBasedCF:
              valid_items = [i for i in item_subset if i in self.R.columns]
              if not valid_items:
                  return {}
-             n_ratings = self.R.loc[n_ids, valid_items].values # Shape: (K, M)
+             n_ratings = self.R.loc[n_ids_valid, valid_items].values # Shape: (K, M)
              items = valid_items
         else:
-             n_ratings = self.R.loc[n_ids].values
+             n_ratings = self.R.loc[n_ids_valid].values
              items = self.R.columns
              
         # Calculate deviations (r_v - mean_v)
         # mean_v shape: (K,)
-        n_means = self.user_means.loc[n_ids].values[:, None] # (K, 1) to broadcast
+        n_means = self.user_means.loc[n_ids_valid].values[:, None] # (K, 1) to broadcast
         
         # Deviations (n_ratings has NaNs)
         deviations = n_ratings - n_means
         
         # Weighted Sum
-        # sims shape: (K,)
+        # sims_valid shape: (K,)
         # score = sum(sim * dev) / sum(|sim|) ignoring NaNs
         
         # Weighted deviations: Broadcast sim to each column
-        weighted_devs = sims[:, None] * deviations # Shape (K, M)
+        weighted_devs = sims_valid[:, None] * deviations # Shape (K, M)
         
         # Numerator: Sum ignoring NaNs
         num = np.nansum(weighted_devs, axis=0) # Shape (M,)
         
         # Denominator: Sum of abs(sim) ONLY for rows where rating was present
         present_mask = ~np.isnan(n_ratings)
-        abs_sims = np.abs(sims)[:, None] # (K, 1)
+        abs_sims = np.abs(sims_valid)[:, None] # (K, 1)
         den = np.sum(abs_sims * present_mask, axis=0) # Shape (M,)
         
         # Scores

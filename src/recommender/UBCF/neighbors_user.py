@@ -125,7 +125,17 @@ def load_or_compute_neighbors(R, sim_fn, K=25, metric="pearson"):
     Returns:
         Dictionary of {user_id: {neighbor_id: similarity, ...}}
     """
-    from src.utils.cache_manager import CacheManager
+    # Import with proper path handling
+    import sys
+    import os
+    
+    # Add src to path if not already there
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    src_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    
+    from utils.cache_manager import CacheManager
     
     cache = CacheManager()
     

@@ -138,6 +138,11 @@ def evaluate_model_ndcg(model, R_train, val_df, k=10):
         if uid not in R_train.index:
             # Skip users not in training set (Cold Start cannot be solved by Pure UBCF)
             continue
+        
+        # SAFETY: Check if user has valid neighbors in training set
+        if uid not in model.neighbors or not model.neighbors[uid]:
+            ndcg_scores.append(0.0)
+            continue
             
         # 1. Predict scores for all items
         preds = model.predict_for_user(uid)
@@ -241,8 +246,7 @@ if __name__ == "__main__":
     val_df["rating"] = val_df["rating"].astype(float)
     
     # Build R_train
-    print("    K_VALUES = [20, 50]
-    OVERLAP_VALUES = [5, 10] # Reduced minimum overlap to solve sparsity    Building R_train matrix...")
+    print("    Building R_train matrix...")
     R_train = train_df.pivot(index="userId", columns="movieId", values="rating")
     
     # Pre-calculate means
@@ -252,16 +256,19 @@ if __name__ == "__main__":
     
     # 2. Define Grid
     # ADJUSTED: Added '5' to overlap, '50' to neighbors to find a working setting
-
+    K_VALUES = [20, 50]
+    OVERLAP_VALUES = [5, 10] # Reduced minimum overlap to solve sparsity
     
     # Similarity Functions configuration
     # We use partials to bind specific params if needed
     # Note: pearson_sw accepts K (significance weighting param), we fix it to 20 or 50.
     
     SIMILARITY_METHODS = [
-        ("Pearson_SW", partial(pearson_sw, K=25)), # K=25 is softer than 50
+        ("Pearson_SW", partial(pearson_sw, K=25)), 
+        ("Pearson_Shrink", partial(pearson_shrink, LAMBDA=25)),
         ("Cosine", cosine_sim),
-        ("Pearson_Shrink", partial(pearson_shrink, LAMBDA=25)) # Lambda=25 is standard literature value
+        ("Spearman_Rank", spearman_rank),
+        ("Spearman_SW", partial(spearman_sw, K=25))
     ]
     
     results = []
@@ -275,12 +282,6 @@ if __name__ == "__main__":
     for sim_name, sim_func in SIMILARITY_METHODS:
         for min_overlap in OVERLAP_VALUES:
             
-            # Construct metric string for caching
-            # We must be careful to handle min_overlap. 
-            # The 'similarity_user.py' functions accept MIN_OVERLAP.
-            # load_or_compute_neighbors uses 'metric' string as cache key.
-            
-            # Configure function with current min_overlap
             current_sim_func = partial(sim_func, MIN_OVERLAP=min_overlap)
             
             for k_neighbors in K_VALUES:
@@ -323,7 +324,7 @@ if __name__ == "__main__":
                     best_config = config_name
 
     # ----------------------------------------------------------------------------
-    # Results saving
+    # Results saving & Plotting
     # ----------------------------------------------------------------------------
     print("\n" + "="*60)
     print("GRID SEARCH COMPLETED")
@@ -348,3 +349,40 @@ if __name__ == "__main__":
     for res in sorted_results[:5]:
         print(f"{res['Method']} (K={res['K_Neighbors']}, Overlap={res['Min_Overlap']}): NDCG={res['NDCG@10']:.4f}")
 
+    # Generate Graph
+    print("\nGenerating Comparison Graph...")
+    try:
+        # Aggregate best score per method for plotting
+        best_scores_per_method = {}
+        for r in results:
+            m = r["Method"]
+            s = r["NDCG@10"]
+            if m not in best_scores_per_method or s > best_scores_per_method[m]:
+                best_scores_per_method[m] = s
+        
+        methods = list(best_scores_per_method.keys())
+        scores = list(best_scores_per_method.values())
+        
+        plt.figure(figsize=(10, 6))
+        bars = plt.bar(methods, scores, color=['#3498db', '#e74c3c', '#2ecc71', '#9b59b6', '#f1c40f'])
+        
+        plt.title('UBCF Performance Comparison (Best NDCG@10 per Metric)', fontsize=14)
+        plt.xlabel('Similarity Metric', fontsize=12)
+        plt.ylabel('NDCG@10 Score', fontsize=12)
+        plt.ylim(0, max(scores) * 1.2)
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        
+        # Add labels along top of bars
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2., height,
+                     f'{height:.4f}',
+                     ha='center', va='bottom')
+        
+        output_plot = os.path.join(RESULTS_DIR, "ubcf_ndcg_comparison.png")
+        plt.savefig(output_plot, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Graph saved to {output_plot}")
+        
+    except Exception as e:
+        print(f"Error generating graph: {e}")
