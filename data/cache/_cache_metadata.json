@@ -1,0 +1,37 @@
+{
+  "user_neighbors_k50_cosine_overlap5_hybrid2_opt": {
+    "timestamp": 1766580062.093354,
+    "ttl": null,
+    "size_mb": 0.3345680236816406
+  },
+  "item_neighbors_k60_cosine_zscore": {
+    "timestamp": 1766643531.4002936,
+    "ttl": null,
+    "size_mb": 7.30577278137207
+  },
+  "item_neighbors_k60_cosine": {
+    "timestamp": 1766644549.1321077,
+    "ttl": null,
+    "size_mb": 7.30577278137207
+  },
+  "user_neighbors_k50_cosine_overlap5_test": {
+    "timestamp": 1766653195.2483668,
+    "ttl": null,
+    "size_mb": 0.3345680236816406
+  },
+  "user_neighbors_k30_Cosine_Overlap5": {
+    "timestamp": 1766658619.1051629,
+    "ttl": null,
+    "size_mb": 0.19125938415527344
+  },
+  "item_neighbors_k20_cosine": {
+    "timestamp": 1766660953.146545,
+    "ttl": null,
+    "size_mb": 3.2689123153686523
+  },
+  "user_neighbors_k20_Cosine_Overlap5": {
+    "timestamp": 1766661055.3362346,
+    "ttl": null,
+    "size_mb": 0.1433258056640625
+  }
+}
