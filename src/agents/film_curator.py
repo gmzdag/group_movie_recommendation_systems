@@ -412,33 +412,6 @@ class FilmFilterAgent:
         self.normalizer = NormalizationLayer()
         self.filter_engine = DeterministicMovieFilter()
         
-        # Load Enrichment Data (Keywords, Overview, Credits)
-        self.metadata_map = self._load_metadata()
-
-    def _load_metadata(self):
-        """Load TMDB metadata for content-based filtering."""
-        try:
-            import pandas as pd
-            df = pd.read_csv('data/movies_tmdb.csv')
-            # Create a dict for fast O(1) lookups: movieId -> dict of attributes
-            # Ensure movieId is int for matching
-            df['movieId'] = pd.to_numeric(df['movieId'], errors='coerce')
-            df = df.dropna(subset=['movieId'])
-            df['movieId'] = df['movieId'].astype(int)
-            
-            # Select relevant columns
-            cols = ['movieId', 'Keywords', 'Overview', 'Director', 'Actors', 'Production_Countries']
-            # Only keep cols that exist
-            cols = [c for c in cols if c in df.columns]
-            
-            # Convert to dict
-            meta_dict = df[cols].set_index('movieId').to_dict('index')
-            print(f"[FilmFilterAgent] Loaded metadata for {len(meta_dict)} movies.")
-            return meta_dict
-        except Exception as e:
-            print(f"[FilmFilterAgent] Warning: Could not load metadata: {e}")
-            return {}
-
     def _setup_model(self):
         """Configure the LLM model (LiteLLM or HF Inference)."""
         gemini_key = get_api_key('gemini')
@@ -469,23 +442,6 @@ class FilmFilterAgent:
         Execute the pipeline.
         """
         print(f"[FilmFilterAgent] Processing prompt: '{user_prompt}'")
-        
-        # Enrich candidates with Metadata BEFORE filtering
-        # This allows us to search Overview, Keywords, Director etc.
-        enriched_count = 0
-        for m in candidate_movies:
-            mid = m.get('movieId')
-            if mid in self.metadata_map:
-                meta = self.metadata_map[mid]
-                # Update inplace
-                m['keywords'] = str(meta.get('Keywords', ''))
-                m['overview'] = str(meta.get('Overview', ''))
-                m['director'] = str(meta.get('Director', ''))
-                m['actors'] = str(meta.get('Actors', ''))
-                m['countries'] = str(meta.get('Production_Countries', ''))
-                enriched_count += 1
-                
-        print(f"[FilmFilterAgent] Enriched {enriched_count} / {len(candidate_movies)} candidates with Metadata.")
         
         # Layer 1: Extract Intent (Smart)
         raw_criteria = self.extractor.extract(user_prompt)
