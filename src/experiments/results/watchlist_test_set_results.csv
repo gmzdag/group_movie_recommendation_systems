@@ -1,0 +1,2 @@
+model,aggregation,disagreement_penalty,top_k,dataset,group_ndcg,fairness,coverage,composite_score,num_groups,unique_movies
+Hybrid3_Baseline,AVERAGE,0.0,10,test,0.043322030292011,0.0,0.01229318076387815,0.0259932181752066,60,159

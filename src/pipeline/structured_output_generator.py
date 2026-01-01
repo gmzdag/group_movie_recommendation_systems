@@ -71,6 +71,9 @@ class StructuredOutputGenerator:
         # Load model performance for multi-model selection
         self.model_performance = self._load_model_performance() if use_multi_model_selection else None
         
+        # Cache for model results to avoid redundant computation across sections
+        self._model_results_cache = {}
+        
     def generate_three_section_output(self, group_users: List[int], user_prompt: Optional[str] = None) -> Dict[str, Any]:
         """
         Generates all three sections for a group.
@@ -91,6 +94,9 @@ class StructuredOutputGenerator:
         
         # Get direct watchlist matches (for exclusion from Section A)
         direct_watchlist_set = self._get_direct_watchlist_set(group_users)
+        
+        # Reset cache for this run
+        self._model_results_cache = {}
         
         # ============================================================================
         # GLOBAL FILTERING (AGENT)
@@ -153,22 +159,22 @@ class StructuredOutputGenerator:
             allowed_ids=valid_ids_set
         )
         
-        # Section D (Apply global filter if valid_ids_set exists)
+        # Section D (NO agent filter - always generate normally)
         section_d = self._generate_section_d(
             group_users, watched_set, section_a, section_b,
-            allowed_ids=valid_ids_set
+            allowed_ids=None  # Don't apply agent filter to Section D
         )
         
-        # Section E - Hybrid 1 specific recommendations
+        # Section E - Hybrid 1 specific recommendations (NO agent filter)
         section_e = self._generate_section_e(
             group_users, watched_set, section_a, section_b, section_d,
-            allowed_ids=valid_ids_set
+            allowed_ids=None  # Don't apply agent filter to Section E
         )
         
-        # Section F - Hybrid 2 specific recommendations
+        # Section F - Hybrid 2 specific recommendations (NO agent filter)
         section_f = self._generate_section_f(
             group_users, watched_set, section_a, section_b, section_d,
-            allowed_ids=valid_ids_set
+            allowed_ids=None  # Don't apply agent filter to Section F
         )
         
         # ============================================================================
@@ -299,8 +305,50 @@ class StructuredOutputGenerator:
     
     def _calculate_quota_allocation(self, total_slots: int = 10) -> Dict[str, int]:
         """
-        Calculate slot allocation for each model based on performance ranking.
+        Calculate slot allocation for each model based on weights or performance.
+        Prioritizes explicit weights if available (e.g. 0.6, 0.3, 0.1 -> 6, 3, 1).
         """
+        import json
+        import os
+        
+        # 1. Try to load explicit weights (Priority: Cache -> Artifacts)
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        paths = [
+            os.path.join(base_dir, "data", "cache", "models", "model_weights.json"),
+            os.path.join(base_dir, "data", "model_artifacts", "ensemble_weights.json"),
+        ]
+        
+        weights = None
+        for p in paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, 'r') as f:
+                        weights = json.load(f)
+                    print(f"[StructuredOutput] Using weights from {os.path.basename(p)} for quotas")
+                    break
+                except Exception:
+                    continue
+        
+        if weights:
+            # Calculate from weights
+            allocation = {}
+            total_w = sum(weights.values())
+            
+            for model, w in weights.items():
+                allocation[model] = int(round((w / total_w) * total_slots))
+            
+            # Adjust to exactly total_slots
+            current_total = sum(allocation.values())
+            diff = total_slots - current_total
+            
+            if diff != 0:
+                # Add/Subtract from highest weight model
+                best_model = max(weights.items(), key=lambda x: x[1])[0]
+                allocation[best_model] += diff
+                
+            return allocation
+
+        # 2. Fallback to Performance-based (Legacy)
         if not self.model_performance:
             # Fallback: equal distribution
             return {'h1': 4, 'h2': 3, 'h3': 3}
@@ -522,8 +570,13 @@ class StructuredOutputGenerator:
             model = getattr(self, m_key)
             m_label = m_key.upper()
             
-            # Request more than quota to handle duplicates from previous models
-            model_recs = model.recommend_for_group(group_users, candidates, top_k=quota + 5)
+            # Request more than quota to handle duplicates and populate cache for Section E/F
+            # We need at least 10 for Section E/F, and some might be filtered/duplicates.
+            limit = max(quota + 5, 20)
+            model_recs = model.recommend_for_group(group_users, candidates, top_k=limit)
+            
+            # Cache results for later sections
+            self._model_results_cache[m_key] = model_recs
             
             added_from_this_model = 0
             for rec in model_recs:
@@ -1350,9 +1403,23 @@ class StructuredOutputGenerator:
         
         # Use Hybrid Model 1
         try:
-            recommendations = self.h1.recommend_for_group(
-                group_users, candidates, top_k=10
-            )
+
+            # OPTIMIZATION: Check cache from Section A
+            if 'h1' in self._model_results_cache:
+                print("[SECTION E] Using cached H1 results from Section A")
+                raw_recs = self._model_results_cache['h1']
+            else:
+                raw_recs = self.h1.recommend_for_group(
+                    group_users, candidates, top_k=20
+                )
+            
+            # CRITICAL FIX: Filter exclusions explicitly from the results
+            # This handles both cached items (which contain Section A items) and new items
+            recommendations = [
+                r for r in raw_recs 
+                if int(r['movie_id']) not in excluded_ids
+            ]
+                
         except Exception as e:
             print(f"[SECTION E] H1 recommendation failed: {e}")
             return []
@@ -1428,9 +1495,22 @@ class StructuredOutputGenerator:
         
         # Use Hybrid Model 2
         try:
-            recommendations = self.h2.recommend_for_group(
-                group_users, candidates, top_k=10
-            )
+
+            # OPTIMIZATION: Check cache from Section A
+            if 'h2' in self._model_results_cache:
+                print("[SECTION F] Using cached H2 results from Section A")
+                raw_recs = self._model_results_cache['h2']
+            else:
+                raw_recs = self.h2.recommend_for_group(
+                    group_users, candidates, top_k=20
+                )
+            
+            # CRITICAL FIX: Filter exclusions explicitly from the results
+            recommendations = [
+                r for r in raw_recs
+                if int(r['movie_id']) not in excluded_ids
+            ]
+
         except Exception as e:
             print(f"[SECTION F] H2 recommendation failed: {e}")
             return []

@@ -119,24 +119,77 @@ class WatchlistHybridModel:
 
         return ExplanationEngine.generate_explanation(signals)    
 
+    def predict_for_group(self, user_ids, candidates):
+        """
+        Optimized batch prediction for group.
+        Returns: {mid: {uid: score}}
+        """
+        results = {} 
+        
+        # 0. Prep candidates
+        valid_cands = [m for m in candidates if m in self.cb_model.movie_to_idx]
+        if not valid_cands: return {}
+        
+        cand_indices = [self.cb_model.movie_to_idx[m] for m in valid_cands]
+        cand_vecs = self.cb_model.tfidf_matrix[cand_indices] # (N_c, F)
+        
+        for uid in user_ids:
+            # 1. Get Watchlist Vectors
+            user_wl = self.watchlist_df[self.watchlist_df['userId'] == uid]['movieId'].unique()
+            valid_wl = [m for m in user_wl if m in self.cb_model.movie_to_idx]
+            
+            if not valid_wl: continue
+            
+            wl_indices = [self.cb_model.movie_to_idx[m] for m in valid_wl]
+            wl_vecs = self.cb_model.tfidf_matrix[wl_indices] # (N_w, F)
+            
+            # 2. Compute Similarities
+            # (N_c, F) @ (N_w, F).T -> (N_c, N_w)
+            sim_matrix = cosine_similarity(cand_vecs, wl_vecs)
+            
+            # 3. Max Sim per candidate
+            # np.max(sim_matrix, axis=1) -> (N_c,)
+            best_sims = sim_matrix.max(axis=1) # Dense array
+            
+            # 4. Store
+            scores = best_sims * 5.0
+            
+            for i, mid in enumerate(valid_cands):
+                if mid not in results: results[mid] = {}
+                results[mid][uid] = float(scores[i])
+                
+        return results
+
     def recommend_for_group(self, user_ids: List[int], candidates: List[int], top_k: int=10) -> List[Dict]:
         """
         Group Recommendation Logic: Average of Individual Watchlist Scores.
         """
+        # Batch Predict
+        batch_scores = self.predict_for_group(user_ids, candidates)
+
         scores_list = []
         
         for mid in candidates:
-            user_scores = []
-            valid_users = 0
+            # Check if we have scores
+            if mid not in batch_scores:
+                continue
+                
+            user_scores_map = batch_scores[mid]
+            if not user_scores_map:
+                continue
             
-            for uid in user_ids:
-                s = self.predict(uid, mid)
-                if not np.isnan(s):
-                    user_scores.append(s)
-                    valid_users += 1
+            # Aggregate valid scores
+            # user_scores_map only contains valid prediction > 0 or at least calculated
             
-            if valid_users > 0:
-                avg_score = np.mean(user_scores)
+            # We must be careful: if a user has NO watchlist items, they are skipped.
+            # Avg should be over users who HAVE data? Or penalize?
+            # Existing code: `if not np.isnan(s): user_scores.append(s)`
+            # My Batch logic skipped users with no watchlist interactions? No, it skipped users with no valid watchlist items.
+            # So if user in user_scores_map, they have a score.
+            
+            vals = list(user_scores_map.values())
+            if vals:
+                avg_score = np.mean(vals)
                 scores_list.append((mid, avg_score))
                 
         # Sort

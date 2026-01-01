@@ -42,6 +42,7 @@ def train_production():
         
         # Calculate individual model performance for multi-model selection
         from src.calibration.weight_calculator import calculate_model_performance_metrics
+        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "experiments")))
         from evaluation_config import OFFLINE_EVAL_CONFIG
         
         performance = calculate_model_performance_metrics(OFFLINE_EVAL_CONFIG)

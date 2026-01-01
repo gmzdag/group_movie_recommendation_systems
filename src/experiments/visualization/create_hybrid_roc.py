@@ -1,0 +1,323 @@
+"""
+Hybrid Models ROC Comparison
+Compares Hybrid1, Hybrid2, and Ensemble models using ROC curves
+"""
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
+from sklearn.metrics import roc_curve, auc
+from sklearn.metrics.pairwise import cosine_similarity
+import sys
+import os
+from functools import partial
+
+# Add paths
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
+from recommender.data_loader import load_all_data, build_cf_matrix
+from recommender.UBCF.similarity_user import cosine_sim
+from recommender.UBCF.neighbors_user import load_or_compute_neighbors
+from recommender.UBCF.user_based_cf import UserBasedCF
+from recommender.CB.content_based import ContentBasedModel
+from recommender.IBCF.neighbors_item import load_or_compute_item_neighbors
+
+# Load data
+print("\n" + "="*70)
+print("HYBRID MODELS ROC COMPARISON")
+print("="*70)
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+data_dir = PROJECT_ROOT / "data"
+splits_dir = data_dir / "splits"
+
+train_df = pd.read_csv(splits_dir / "train.csv")
+test_df = pd.read_csv(splits_dir / "test.csv")
+movies_df = pd.read_csv(data_dir / "movies_TMDB.csv")
+
+print(f"\nTrain: {len(train_df)}, Test: {len(test_df)}")
+
+# Build matrices
+R_train = train_df.pivot(index="userId", columns="movieId", values="rating")
+user_means = R_train.mean(axis=1)
+global_mean = train_df["rating"].mean()
+
+# Prepare test data
+RATING_THRESHOLD = 3.5
+test_df['is_relevant'] = (test_df['rating'] >= RATING_THRESHOLD).astype(int)
+
+# Sample 2000 test samples
+if len(test_df) > 2000:
+    test_sample = test_df.sample(n=2000, random_state=42)
+else:
+    test_sample = test_df.copy()
+
+print(f"Test samples: {len(test_sample)}")
+print(f"Positive: {test_sample['is_relevant'].sum()}, Negative: {(~test_sample['is_relevant'].astype(bool)).sum()}")
+
+# Initialize base models
+print("\n" + "="*70)
+print("INITIALIZING BASE MODELS")
+print("="*70)
+
+# UBCF
+print("\n📌 UBCF...")
+sim_func = partial(cosine_sim, MIN_OVERLAP=5)
+neighbors = load_or_compute_neighbors(R_train, sim_func, K=20, metric='Cosine_Overlap5')
+ubcf = UserBasedCF(R=R_train, neighbors=neighbors, user_means=user_means, 
+                   item_means=user_means, global_mean=global_mean)
+
+# IBCF
+print("\n📌 IBCF...")
+raw_um = build_cf_matrix(train_df)
+norm_um = raw_um.sub(raw_um.mean(axis=1), axis=0)
+norm_um_filled = norm_um.fillna(0)
+item_sim_matrix = cosine_similarity(norm_um_filled.T)
+item_sim = pd.DataFrame(item_sim_matrix, index=raw_um.columns, columns=raw_um.columns)
+np.fill_diagonal(item_sim.values, 0)
+item_neighbors = load_or_compute_item_neighbors(item_sim, K=60, metric="cosine_zscore")
+
+# CBF
+print("\n📌 CBF...")
+cbf = ContentBasedModel(movies_df=movies_df, ratings_df=train_df)
+
+print("\n✓ Base models ready")
+
+# Initialize Hybrid models
+print("\n" + "="*70)
+print("INITIALIZING HYBRID MODELS")
+print("="*70)
+
+models = {}
+
+# 1. Hybrid1 (IBCF + CBF with Trust)
+print("\n1️⃣  Hybrid1 (IBCF + CBF, Trust-based)...")
+
+def hybrid1_predict(user_id, movie_id, raw_um, norm_um, item_neighbors, item_sim, cbf, user_means, global_mean, C=1.0, top_k=60):
+    ibcf_pred = np.nan
+    n_neighbors = 0
+    
+    if user_id in raw_um.index and movie_id in item_neighbors:
+        user_ratings_norm = norm_um.loc[user_id]
+        rated_items = raw_um.loc[user_id].dropna().index
+        neighbors_list = item_neighbors.get(movie_id, [])
+        valid_neighbors = [nid for nid in neighbors_list if nid in rated_items and nid != movie_id]
+        
+        if len(valid_neighbors) > 0:
+            n_neighbors = min(len(valid_neighbors), top_k)
+            top_neighbors = valid_neighbors[:n_neighbors]
+            sims = item_sim[movie_id].loc[top_neighbors]
+            ratings = user_ratings_norm.loc[top_neighbors]
+            
+            if sims.abs().sum() > 0:
+                numerator = np.dot(sims.values, ratings.values)
+                denominator = np.sum(np.abs(sims.values))
+                pred_norm = numerator / denominator
+                ibcf_pred = user_means[user_id] + pred_norm
+    
+    cbf_pred = cbf.predict_rating(user_id, movie_id)
+    
+    if np.isnan(ibcf_pred) and np.isnan(cbf_pred):
+        return global_mean
+    elif np.isnan(ibcf_pred):
+        return max(0, min(5, cbf_pred))
+    elif np.isnan(cbf_pred):
+        return max(0, min(5, ibcf_pred))
+    
+    alpha = n_neighbors / (n_neighbors + C)
+    beta = C / (n_neighbors + C)
+    final = alpha * ibcf_pred + beta * cbf_pred
+    return max(0, min(5, final))
+
+models['Hybrid1'] = {
+    'predict': lambda uid, mid: hybrid1_predict(uid, mid, raw_um, norm_um, item_neighbors, item_sim, cbf, user_means, global_mean),
+    'description': 'IBCF + CBF (Trust-based, C=1.0)'
+}
+print("   ✓ Initialized")
+
+# 2. Hybrid2 (UBCF + CBF weighted)
+print("\n2️⃣  Hybrid2 (UBCF + CBF, Weighted)...")
+
+def hybrid2_predict(user_id, movie_id, ubcf, cbf, global_mean, w_ubcf=0.10, w_cbf=0.90):
+    try:
+        ubcf_pred = ubcf.predict(user_id, movie_id)
+    except:
+        ubcf_pred = np.nan
+    
+    cbf_pred = cbf.predict_rating(user_id, movie_id)
+    
+    if np.isnan(ubcf_pred) and np.isnan(cbf_pred):
+        return global_mean
+    elif np.isnan(ubcf_pred):
+        return max(0, min(5, cbf_pred))
+    elif np.isnan(cbf_pred):
+        return max(0, min(5, ubcf_pred))
+    
+    final = w_ubcf * ubcf_pred + w_cbf * cbf_pred
+    return max(0, min(5, final))
+
+models['Hybrid2'] = {
+    'predict': lambda uid, mid: hybrid2_predict(uid, mid, ubcf, cbf, global_mean),
+    'description': 'UBCF + CBF (Weighted 0.10/0.90)'
+}
+print("   ✓ Initialized")
+
+# 3. Watchlist-Aligned (CBF + Watchlist Boost)
+print("\n3️⃣  Watchlist-Aligned (CBF + Watchlist)...")
+
+try:
+    watchlist_df = pd.read_csv(data_dir / "watchlist.csv")
+    user_watchlists = watchlist_df.groupby('userId')['movieId'].apply(set).to_dict()
+    
+    def watchlist_predict(user_id, movie_id, cbf, user_watchlists, global_mean):
+        # Get CBF base score
+        cbf_score = cbf.predict_rating(user_id, movie_id)
+        
+        # Strong boost for watchlist items (user explicitly interested)
+        if user_id in user_watchlists and movie_id in user_watchlists[user_id]:
+            if np.isnan(cbf_score):
+                return 4.5  # High default for watchlist items
+            else:
+                # Significant boost for watchlist alignment
+                return min(5.0, cbf_score + 0.5)
+        else:
+            # Regular CBF score
+            if np.isnan(cbf_score):
+                return global_mean
+            return max(0, min(5, cbf_score))
+    
+    models['Watchlist'] = {
+        'predict': lambda uid, mid: watchlist_predict(uid, mid, cbf, user_watchlists, global_mean),
+        'description': 'CBF + Watchlist Boost (+0.5)'
+    }
+    print("   ✓ Initialized")
+    has_watchlist = True
+except:
+    print("   ⚠️  Watchlist data not found")
+    has_watchlist = False
+
+# Generate predictions
+print("\n" + "="*70)
+print("GENERATING PREDICTIONS")
+print("="*70)
+
+def get_predictions(model, test_data, model_name):
+    print(f"\n📊 {model_name}...")
+    
+    y_true = []
+    y_scores = []
+    
+    for idx, row in test_data.iterrows():
+        user_id = row['userId']
+        movie_id = row['movieId']
+        true_label = row['is_relevant']
+        
+        try:
+            pred_score = model['predict'](user_id, movie_id)
+            
+            if pd.isna(pred_score) or pred_score is None:
+                continue
+            
+            pred_score = max(0, min(5, pred_score))
+            y_true.append(true_label)
+            y_scores.append(pred_score)
+        except:
+            continue
+    
+    print(f"   ✓ {len(y_scores)}/{len(test_data)} predictions")
+    return np.array(y_true), np.array(y_scores)
+
+roc_data = {}
+
+for model_name, model in models.items():
+    y_true, y_scores = get_predictions(model, test_sample, model_name)
+    
+    if len(y_true) > 10:
+        fpr, tpr, _ = roc_curve(y_true, y_scores)
+        roc_auc = auc(fpr, tpr)
+        roc_data[model_name] = {'fpr': fpr, 'tpr': tpr, 'auc': roc_auc}
+        print(f"   ✓ AUC: {roc_auc:.4f}")
+
+# Colors
+model_colors = {
+    'Hybrid1': '#f39c12',
+    'Hybrid2': '#9b59b6',
+    'Watchlist': '#1abc9c'
+}
+model_linestyles = {
+    'Hybrid1': '-',
+    'Hybrid2': '--',
+    'Watchlist': '-.'
+}
+
+def create_roc_plot(theme='dark'):
+    if theme == 'dark':
+        bg_color, text_color, grid_color, legend_bg, suffix = '#151515', 'white', 'white', '#1a1a1a', ''
+    else:
+        bg_color, text_color, grid_color, legend_bg, suffix = 'white', 'black', 'gray', 'white', '_white'
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    fig.patch.set_facecolor(bg_color)
+    ax.set_facecolor(bg_color)
+    
+    for model_name in ['Hybrid1', 'Hybrid2', 'Watchlist']:
+        if model_name in roc_data:
+            data = roc_data[model_name]
+            ax.plot(data['fpr'], data['tpr'], color=model_colors[model_name],
+                   linestyle=model_linestyles[model_name], linewidth=3,
+                   label=f"{model_name} (AUC = {data['auc']:.4f})", alpha=0.9)
+    
+    ax.plot([0, 1], [0, 1], color=grid_color, linestyle=':', linewidth=2,
+           label='Random (AUC = 0.5000)', alpha=0.5)
+    
+    ax.set_xlabel('False Positive Rate', fontsize=13, fontweight='bold', color=text_color)
+    ax.set_ylabel('True Positive Rate', fontsize=13, fontweight='bold', color=text_color)
+    ax.set_title('ROC Curves: Hybrid Models Comparison\n(Rating Threshold ≥ 3.5)', 
+                 fontsize=15, fontweight='bold', color=text_color, pad=20)
+    ax.legend(loc='lower right', fontsize=11, facecolor=legend_bg,
+             edgecolor=text_color, framealpha=0.95, labelcolor=text_color)
+    ax.grid(True, alpha=0.3, linestyle='--', color=grid_color)
+    ax.tick_params(axis='both', colors=text_color, labelsize=11)
+    
+    for spine in ax.spines.values():
+        spine.set_color(text_color)
+    
+    ax.set_xlim([-0.02, 1.02])
+    ax.set_ylim([-0.02, 1.02])
+    ax.set_aspect('equal', adjustable='box')
+    
+    plt.tight_layout()
+    results_dir = Path(__file__).parent / "results"
+    plt.savefig(results_dir / f'hybrid_models_roc{suffix}.svg', 
+               format='svg', dpi=300, facecolor=bg_color)
+    print(f"\n✓ {theme} theme: hybrid_models_roc{suffix}.svg")
+    plt.close()
+
+# Create plots
+print("\n" + "="*70)
+print("CREATING ROC VISUALIZATIONS")
+print("="*70)
+
+create_roc_plot(theme='dark')
+create_roc_plot(theme='white')
+
+# Summary
+print("\n" + "="*70)
+print("✅ HYBRID MODELS ROC ANALYSIS COMPLETE!")
+print("="*70)
+print("\n📊 Files:")
+print("   - hybrid_models_roc.svg (Dark #151515)")
+print("   - hybrid_models_roc_white.svg (White)")
+print("\n📈 Performance Ranking:")
+for rank, (name, data) in enumerate(sorted(roc_data.items(), key=lambda x: x[1]['auc'], reverse=True), 1):
+    desc = models[name]['description']
+    print(f"   {rank}. {name:12s} (AUC: {data['auc']:.4f}) - {desc}")
+
+print("\n💡 ROC Analysis:")
+print("   ROC curves are appropriate for hybrid models because:")
+print("   - They evaluate binary classification (relevant vs irrelevant)")
+print("   - AUC measures ranking quality across all thresholds")
+print("   - Hybrid models combine predictions → ROC shows if combination improves discrimination")
+print("   - Higher AUC = Better at distinguishing liked vs disliked items")
+print("\n" + "="*70)

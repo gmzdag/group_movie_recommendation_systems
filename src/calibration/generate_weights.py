@@ -15,8 +15,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from src.utils.persistence import CACHE_DIR
 from src.calibration.weight_calculator import calculate_production_weights
 
-# Import config
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
+# Import config from experiments folder
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "experiments")))
 from evaluation_config import OFFLINE_EVAL_CONFIG
 
 

@@ -33,5 +33,100 @@
     "timestamp": 1766661055.3362346,
     "ttl": null,
     "size_mb": 0.1433258056640625
+  },
+  "user_neighbors_k20_Pearson_SW_Overlap5": {
+    "timestamp": 1766688601.5858781,
+    "ttl": null,
+    "size_mb": 0.13901615142822266
+  },
+  "user_neighbors_k50_Pearson_SW_Overlap5": {
+    "timestamp": 1766688765.6863785,
+    "ttl": null,
+    "size_mb": 0.3256196975708008
+  },
+  "user_neighbors_k20_Pearson_SW_Overlap10": {
+    "timestamp": 1766688871.4147694,
+    "ttl": null,
+    "size_mb": 0.1262989044189453
+  },
+  "user_neighbors_k50_Pearson_SW_Overlap10": {
+    "timestamp": 1766688966.1327403,
+    "ttl": null,
+    "size_mb": 0.27777767181396484
+  },
+  "user_neighbors_k20_Pearson_Shrink_Overlap5": {
+    "timestamp": 1766689071.963884,
+    "ttl": null,
+    "size_mb": 0.13914203643798828
+  },
+  "user_neighbors_k50_Pearson_Shrink_Overlap5": {
+    "timestamp": 1766689173.798185,
+    "ttl": null,
+    "size_mb": 0.3256988525390625
+  },
+  "user_neighbors_k20_Pearson_Shrink_Overlap10": {
+    "timestamp": 1766689275.3491507,
+    "ttl": null,
+    "size_mb": 0.12644100189208984
+  },
+  "user_neighbors_k50_Pearson_Shrink_Overlap10": {
+    "timestamp": 1766689342.6769326,
+    "ttl": null,
+    "size_mb": 0.27789878845214844
+  },
+  "user_neighbors_k50_Cosine_Overlap5": {
+    "timestamp": 1766690086.4491658,
+    "ttl": null,
+    "size_mb": 0.3345680236816406
+  },
+  "user_neighbors_k20_Cosine_Overlap10": {
+    "timestamp": 1766690140.1529334,
+    "ttl": null,
+    "size_mb": 0.12896251678466797
+  },
+  "user_neighbors_k50_Cosine_Overlap10": {
+    "timestamp": 1766690224.66105,
+    "ttl": null,
+    "size_mb": 0.2953042984008789
+  },
+  "user_neighbors_k20_Spearman_Rank_Overlap5": {
+    "timestamp": 1766690326.7660077,
+    "ttl": null,
+    "size_mb": 0.13878917694091797
+  },
+  "user_neighbors_k50_Spearman_Rank_Overlap5": {
+    "timestamp": 1766690388.892224,
+    "ttl": null,
+    "size_mb": 0.3253641128540039
+  },
+  "user_neighbors_k20_Spearman_Rank_Overlap10": {
+    "timestamp": 1766690480.303974,
+    "ttl": null,
+    "size_mb": 0.12609481811523438
+  },
+  "user_neighbors_k50_Spearman_Rank_Overlap10": {
+    "timestamp": 1766690579.309554,
+    "ttl": null,
+    "size_mb": 0.2778472900390625
+  },
+  "user_neighbors_k20_Spearman_SW_Overlap5": {
+    "timestamp": 1766690683.8720448,
+    "ttl": null,
+    "size_mb": 0.13917922973632812
+  },
+  "user_neighbors_k50_Spearman_SW_Overlap5": {
+    "timestamp": 1766690758.9921322,
+    "ttl": null,
+    "size_mb": 0.32572364807128906
+  },
+  "user_neighbors_k20_Spearman_SW_Overlap10": {
+    "timestamp": 1766690823.4304798,
+    "ttl": null,
+    "size_mb": 0.1263589859008789
+  },
+  "user_neighbors_k50_Spearman_SW_Overlap10": {
+    "timestamp": 1766690880.0684001,
+    "ttl": null,
+    "size_mb": 0.27807044982910156
   }
 }

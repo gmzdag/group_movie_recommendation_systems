@@ -1,7 +1,7 @@
 """
 Content-Based Filtering Model (Signal Provider) - V2
 -----------------------------------------------
-Generates similarity signals based on movie metadata (Genres, Overview, Cast, etc.)
+Generates similarity signals based on movie metadata (Genres, Overview, Keywords, Director, Actors)
 Strictly designed for Hybrid System integration.
 
 Features:
@@ -63,6 +63,9 @@ class ContentBasedModel:
         self.movie_to_idx = pd.Series(
             self.movies_df.index, index=self.movies_df['movieId']
         ).to_dict()
+
+        # Optimize Metadata Access for Explanation Generation
+        self.metadata_lookup = self.movies_df.set_index('movieId').to_dict('index')
         
         # Pre-compute User Means for Profile Construction efficiently
         print(f"[DEBUG] Pre-computing user means...")
@@ -231,15 +234,6 @@ class ContentBasedModel:
         """
         Predicts rating (1-5) using Content-Based k-NN Regression.
         Formula: r_hat = mu_u + [ Sum(sim(i,j) * (r_uj - mu_u)) / Sum(|sim(i,j)|) ]
-        
-        Args:
-            user_id: Target User
-            movie_id: Target Movie
-            top_k: Number of content-similar items to use
-            
-        Returns:
-            float: Predicted Rating (1.0 - 5.0)
-            NaN: If prediction impossible
         """
         # 1. Validation and Setup
         if movie_id not in self.movie_to_idx:
@@ -298,6 +292,82 @@ class ContentBasedModel:
         
         return float(prediction)
 
+    def predict_for_group(self, user_ids, candidate_ids, top_k=20):
+        """
+        Optimized batch prediction.
+        Returns: Dict[movie_id, Dict[user_id, float]]
+        """
+        results = {}
+        
+        # 0. Validate candidates
+        valid_candidates = [m for m in candidate_ids if m in self.movie_to_idx]
+        if not valid_candidates: return results
+        
+        cand_indices = [self.movie_to_idx[m] for m in valid_candidates]
+        cand_vecs = self.tfidf_matrix[cand_indices] # (n_cand, n_features)
+        
+        for uid in user_ids:
+            # 1. Get History
+            history = self.ratings_df[self.ratings_df['userId'] == uid]
+            if history.empty: continue
+            
+            user_mean = self.user_means.get(uid, 3.0)
+            
+            # 2. Get History Vecs
+            hist_mids = [m for m in history['movieId'] if m in self.movie_to_idx]
+            if not hist_mids: continue
+            
+            # Using set_index access is faster if done right, but here we scan list.
+            # Convert to DataFrame for easier aligned access
+            hist_df = history[history['movieId'].isin(hist_mids)]
+            hist_indices = [self.movie_to_idx[m] for m in hist_df['movieId']]
+            hist_ratings = hist_df['rating'].values
+            
+            if not hist_indices: continue
+            
+            hist_vecs = self.tfidf_matrix[hist_indices] # (n_hist, n_features)
+            
+            # 3. Batch Cosine Similarity
+            # (n_cand, n_feat) @ (n_hist, n_feat).T -> (n_cand, n_hist)
+            # This is one big matrix multiplication
+            sim_matrix = cosine_similarity(cand_vecs, hist_vecs)
+            
+            # 4. Compute Rating Predictions for all candidates
+            # We iterate over the rows (candidates), but memory access is local
+            
+            for i, row in enumerate(sim_matrix):
+                # Row: similarities of candidate i to all history items
+                length = len(row)
+                if length == 0: continue
+                
+                # Top K
+                if length > top_k:
+                   # argpartition is O(n), argsort is O(n log n). 
+                   # We need indices of top K
+                   idx = np.argpartition(row, -top_k)[-top_k:]
+                   # We don't strictly need to sort them for Weighted Avg, 
+                   # but traditional k-NN implies "nearest". 
+                   # partition gives nearest, just unsorted. That's fine for sum.
+                else:
+                   idx = np.arange(length)
+                   
+                sims_k = row[idx]
+                ratings_k = hist_ratings[idx]
+                
+                sum_sim = np.sum(np.abs(sims_k))
+                
+                mid = valid_candidates[i]
+                
+                if sum_sim == 0:
+                     val = float(user_mean)
+                else:
+                     val = float(user_mean + np.dot(sims_k, ratings_k - user_mean) / sum_sim)
+                
+                if mid not in results: results[mid] = {}
+                results[mid][uid] = val
+                
+        return results
+
     def get_explanation(self, user_id, movie_id, top_k=5):
         """
         Generates a content-based explanation for why a movie is recommended.
@@ -352,10 +422,16 @@ class ContentBasedModel:
         """
         def get_vals(mid, col):
             try:
-                row = self.movies_df[self.movies_df['movieId'] == mid]
-                if row.empty: return set()
-                val = row[col].values[0]
-                if pd.isna(val): return set()
+                # Fast Dictionary Lookup (O(1)) instead of DataFrame Filter (O(N))
+                # Note: self.metadata_lookup must be initialized in __init__
+                data = self.metadata_lookup.get(mid)
+                if not data: return set()
+                
+                val = data.get(col)
+                # Check for NaN/None
+                if val is None: return set()
+                if isinstance(val, float) and np.isnan(val): return set()
+                
                 return set([x.strip() for x in str(val).replace('|', ',').split(',') if x.strip()])
             except:
                 return set()

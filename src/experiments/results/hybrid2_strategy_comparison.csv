@@ -1,0 +1,8 @@
+Strategy,Parameter,NDCG@10
+Binary Switching,K=30,0.46635650610954665
+Confidence-Weighted,C=1,0.46462462771333185
+Confidence-Weighted,C=5,0.4658025662469175
+Confidence-Weighted,C=10,0.4698493667555057
+Confidence-Weighted,C=20,0.47560928635775646
+Confidence-Weighted,C=30,0.48752476769972647
+Performance-Weighted,w=0.35/0.65,0.5489336578997077

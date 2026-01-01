@@ -113,18 +113,62 @@ class SwitchingHybridRecommender:
         Group recommendation using configured strategy.
         Returns list of dicts for ensemble compatibility.
         """
+        # 1. Pre-compute UBCF scores (Batch per user)
+        ubcf_batch = {}
+        if hasattr(self.ubcf, 'predict_for_user'):
+            for uid in group_users:
+                # Optimized vector prediction
+                ubcf_batch[uid] = self.ubcf.predict_for_user(uid, candidates)
+        else:
+            # Fallback (shouldn't happen with correct class)
+            ubcf_batch = {uid: {} for uid in group_users}
+            
+        # 2. Pre-compute CBF scores (Batch group)
+        try:
+            cbf_batch = self.cbf.predict_for_group(group_users, candidates)
+        except AttributeError:
+            cbf_batch = {}
+
         group_scores = []
         
         for mid in candidates:
             member_scores = []
             
             for uid in group_users:
-                try:
-                    score, method = self.predict(uid, mid)
-                    if not np.isnan(score):
-                        member_scores.append(score)
-                except:
-                    pass
+                # Retrieve pre-calculated
+                ubcf_score = ubcf_batch.get(uid, {}).get(mid, np.nan)
+                cbf_score = cbf_batch.get(mid, {}).get(uid, np.nan)
+                
+                final_score = np.nan
+                
+                # Logic from self.predict()
+                if self.strategy == 'performance_weighted':
+                    if np.isnan(ubcf_score) and np.isnan(cbf_score):
+                        final_score = self.ubcf.global_mean
+                    elif np.isnan(ubcf_score):
+                        final_score = cbf_score
+                    elif np.isnan(cbf_score):
+                        final_score = ubcf_score
+                    else:
+                        final_score = self.w_ubcf * ubcf_score + self.w_cbf * cbf_score
+                        
+                else: # Switching
+                    # Check neighbor threshold
+                    user_neighbors = self.ubcf.neighbors.get(uid, {})
+                    if len(user_neighbors) >= self.neighbor_threshold:
+                         # Use UBCF
+                         final_score = ubcf_score
+                         if np.isnan(final_score): # If UBCF failed despite neighbors
+                             final_score = cbf_score
+                    else:
+                         # Use CBF
+                         final_score = cbf_score
+                         
+                    if np.isnan(final_score):
+                         final_score = self.ubcf.global_mean
+
+                if not np.isnan(final_score):
+                    member_scores.append(final_score)
             
             if member_scores:
                 avg_score = np.mean(member_scores)
@@ -135,11 +179,23 @@ class SwitchingHybridRecommender:
         
         results = []
         for mid, score in top_items:
+            # Generate explanations
+            item_explanations = {}
+            for uid in group_users:
+                try:
+                    item_explanations[uid] = self.explain(uid, mid)
+                except Exception:
+                    item_explanations[uid] = "Recommended based on group stats."
+
+            # Determine signal source based on strategy
+            sig_source = "Hybrid (Weighted)" if self.strategy == 'performance_weighted' else "Hybrid (Switching)"
+            
             results.append({
                 'movie_id': mid,
                 'score': score,
                 'group_explanation': 'Aligns with the common tastes and shared movie preferences of the group.',
-                'explanations': {}
+                'explanations': item_explanations,
+                'signal_source': sig_source
             })
         
         return results
@@ -181,7 +237,7 @@ class SwitchingHybridRecommender:
 
     def explain(self, user_id: int, movie_id: int) -> Dict[str, Any]:
         """Generate explanation for prediction."""
-        from src.recommender.explanation_engine import ExplanationEngine
+        from recommender.explanation_engine import ExplanationEngine
         
         signals = []
         score, method = self.predict(user_id, movie_id)

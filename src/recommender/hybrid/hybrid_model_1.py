@@ -217,33 +217,70 @@ class HybridModel1:
             print(f"[WARNING] Sequel filtering failed: {e}. Continuing without sequel filter.")
                 
         # **GROUP AGGREGATION: AVERAGE STRATEGY**
-        # This is the ONLY aggregation strategy used in H1.
-        # Group_Score(item) = Mean([predict(user, item) for user in group])
-        # Reference: Masthoff, J. (2011). Group recommender systems: Combining individual models.
-        # 
-        # **IMPORTANT**: We do NOT use:
-        # - Least Misery (min aggregation)
-        # - Harmonic Mean
-        # - Fairness-aware aggregation
-        # 
-        # This is a conscious baseline choice for controlled comparison with H2.
+        # Batch Predict for all users and candidates at once (Vectorized Optimization)
+        print(f"    [PREDICT] Batch processing {len(valid_candidates)} candidates...", flush=True)
         
+        try:
+            # 1. IB Batch
+            ib_batch = self.ib_model.predict_for_group(user_ids, valid_candidates)
+        except AttributeError:
+             # Fallback if old valid_candidates format or method missing
+             ib_batch = {}
+        
+        try:
+            # 2. CB Batch
+            cb_batch = self.cb_model.predict_for_group(user_ids, valid_candidates)
+        except AttributeError:
+             cb_batch = {}
+
         group_results = []
         total_candidates = len(valid_candidates)
         
         for idx, mid in enumerate(valid_candidates, 1):
-            # Progress logging every 100 movies
-            if idx % 100 == 0 or idx == 1 or idx == total_candidates:
-                print(f"    [PREDICT] Processing movie {idx}/{total_candidates} (ID: {mid})...", flush=True)
+            # Progress logging every 200 (less spammy)
+            if idx % 200 == 0:
+                print(f"    [PREDICT] Processing movie {idx}/{total_candidates}...", flush=True)
             
             scores = []
             for uid in user_ids:
-                try:
-                    s = self.predict(uid, mid)
-                    if not np.isnan(s):
-                        scores.append(s)
-                except Exception as e:
-                    continue
+                # Retrieve pre-calculated values
+                ib_res = ib_batch.get(mid, {}).get(uid)
+                cb_val = cb_batch.get(mid, {}).get(uid)
+                
+                ib_pred = np.nan
+                n = 0
+                if ib_res:
+                    ib_pred = ib_res.get('score', np.nan)
+                    n = ib_res.get('n_neighbors', 0)
+                
+                cb_pred = cb_val if cb_val is not None else np.nan
+                
+                # Hybrid Logic (Matches self.predict)
+                # -----------------------------------
+                
+                # 1. Both Failed
+                if np.isnan(ib_pred) and np.isnan(cb_pred):
+                    # Use global mean if available
+                    if hasattr(self.ib_model, 'global_mean'):
+                         s = self.ib_model.global_mean
+                    else:
+                         continue # Skip if completely unknown
+                
+                # 2. One Failed
+                elif np.isnan(ib_pred):
+                     s = cb_pred
+                elif np.isnan(cb_pred):
+                     s = ib_pred
+                
+                # 3. Both Succeeded
+                else: 
+                     # Dynamic Weighting
+                     alpha = n / (n + self.C)
+                     beta = self.C / (n + self.C)
+                     s = (alpha * ib_pred) + (beta * cb_pred)
+                
+                if not np.isnan(s):
+                    scores.append(s)
             
             if scores:
                 # **AVERAGE AGGREGATION** (Baseline Strategy)
@@ -255,6 +292,7 @@ class HybridModel1:
         top_items = group_results[:top_k]
         
         # Generate Explanations for Top Items
+        print(f"    [PREDICT] Generating explanations for top {top_k} recommendations...", flush=True)
         final_recommendations = []
         for mid, score in top_items:
             explanations = {}

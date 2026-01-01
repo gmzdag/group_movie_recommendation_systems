@@ -190,6 +190,14 @@ class NormalizationLayer:
             'yılbaşı': ['Christmas', 'New Year', 'Holiday'],
             'noel': ['Christmas'],
             'christmas': ['Christmas', 'Holiday'],
+            
+            # Teen/Youth themes (expanded for better matching)
+            'teen': ['teen', 'teenager', 'teenage', 'adolescent', 'high school', 
+                     'coming of age', 'youth', 'young adult', 'student'],
+            'teenager': ['teen', 'teenager', 'teenage', 'adolescent', 'high school'],
+            'gençlik': ['teen', 'teenager', 'youth', 'young', 'adolescent'],
+            
+            # Other themes
             'uzay': ['Space', 'Alien'],
             'space': ['Space'],
             'savaş': ['War', 'Military'],

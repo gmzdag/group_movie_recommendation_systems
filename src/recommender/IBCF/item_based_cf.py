@@ -34,6 +34,7 @@ class ItemBasedCF:
         self.norm_um = norm_um
         self.item_neighbors = item_neighbors
         self.movies = movies
+        self.title_lookup = self.movies.set_index('movieId')['title'].to_dict()
         self.top_k = top_k
         
         # ------------------------------------------------------------------
@@ -42,10 +43,6 @@ class ItemBasedCF:
         # Check 1: Mean is approx 0
         row_means = self.norm_um.mean(axis=1)
         global_mean = row_means.mean()
-        
-        # Check 2: Std of non-zero values (approx check)
-        # We can't easily check 'std=1' on sparse 0-filled data without re-masking,
-        # but we can assume if mean is 0 it's likely centered/standardized.
         
         if abs(global_mean) > 0.1:
             print(f"\n[WARNING] 'norm_um' does NOT appear to be Z-Score Normalized!")
@@ -75,13 +72,6 @@ class ItemBasedCF:
         """
         Predict rating for user_id on movie_id using Z-Score reconstruction.
         Formula: pred = μ_u + ( (Σ s_ij * z_uj) / Σ|s_ij| ) * σ_u
-        
-        Args:
-            return_info (bool): If True, returns tuple (prediction, info_dict)
-        
-        Returns:
-            float: Predicted rating
-            NaN: If prediction impossible (no neighbors, no history)
         """
         
         info = {'n_neighbors': 0}
@@ -130,6 +120,107 @@ class ItemBasedCF:
         result = float(prediction)
         return (result, info) if return_info else result
 
+    def predict_for_group(self, user_ids, movie_ids):
+        """
+        Optimized batch prediction for a group of users across many movies.
+        Significantly reduces Pandas overhead compared to calling predict() in a loop.
+        
+        Returns:
+            Dict[movie_id, Dict[user_id, {'score': float, 'n_neighbors': int}]]
+        """
+        results = {}
+        
+        # Filter valid users
+        valid_users = [u for u in user_ids if u in self.user_means.index]
+        if not valid_users:
+            return results
+            
+        # Pre-fetch User Stats (Fast Array Access)
+        u_means = self.user_means.loc[valid_users].values # (n_users,)
+        u_stds = self.user_stds.loc[valid_users].values   # (n_users,)
+        
+        # Pre-fetch DataFrames (Big bottleneck optimization)
+        # We fetch ALL columns for these users once.
+        # This assumes memory allows (3 users x 1000 items is tiny).
+        user_norm_df = self.norm_um.loc[valid_users]
+        user_raw_df = self.raw_um.loc[valid_users]
+        
+        # Convert to numpy for ultra-fast access if possible, but columns alignment matters.
+        # We will keep DF for column lookup but use .values for calculation.
+        
+        valid_mids = [m for m in movie_ids if m in self.item_neighbors]
+        
+        for mid in valid_mids:
+            neighbors = self.item_neighbors[mid]
+            neighbor_ids = list(neighbors.keys())
+            
+            # Intersection of neighbors and what we have in data
+            # (In case neighbors point to items not in our matrix cols)
+            valid_n_ids = [n for n in neighbor_ids if n in user_norm_df.columns]
+            
+            if not valid_n_ids:
+                continue
+                
+            # Extract matrices for these neighbors
+            # Z-scores: (n_users, n_neighbors)
+            z_matrix = user_norm_df[valid_n_ids].values 
+            
+            # Raw Ratings (to check NaN)
+            r_matrix = user_raw_df[valid_n_ids].values
+            
+            # Mask: True where user HAS rated
+            mask = ~pd.isna(r_matrix)
+            
+            # Weights: (n_neighbors,)
+            weights = np.array([neighbors[n] for n in valid_n_ids])
+            
+            # Iterate users (vectorized over items)
+            # We want: for each user, (Sum(w * z) where masked) / (Sum(|w|) where masked)
+            
+            # Numerator: (Weights * Z_scores) summed where mask is True
+            # We can zero out unmasked values
+            
+            # Expand weights to (n_users, n_neighbors)
+            w_matrix = np.tile(weights, (len(valid_users), 1))
+            
+            # Apply Mask
+            w_masked = w_matrix * mask # Unrated become 0
+            z_masked = z_matrix        # Unrated Zs are ignored because W is 0
+            
+            # Numerator
+            weighted_sum = np.sum(w_masked * z_masked, axis=1)
+            
+            # Denominator
+            sum_abs_weights = np.sum(np.abs(w_masked), axis=1)
+            
+            # Neighbor Counts
+            n_neighbors = np.sum(mask, axis=1)
+            
+            # Compute Predictions
+            # Avoid divide by zero
+            valid_preds = sum_abs_weights > 0
+            
+            current_results = {}
+            
+            # Vectorized calc for valid ones
+            if np.any(valid_preds):
+                preds = u_means[valid_preds] + ( (weighted_sum[valid_preds] / sum_abs_weights[valid_preds]) * u_stds[valid_preds] )
+                
+                # Assign back
+                valid_u_indices = np.where(valid_preds)[0]
+                for idx_in_valid, u_idx in enumerate(valid_u_indices):
+                    uid = valid_users[u_idx]
+                    score = float(preds[idx_in_valid])
+                    n = int(n_neighbors[u_idx])
+                    
+                    if not (np.isnan(score) or np.isinf(score)):
+                         current_results[uid] = {'score': score, 'n_neighbors': n}
+            
+            if current_results:
+                results[mid] = current_results
+                
+        return results
+
     def get_explanation(self, user_id, movie_id, top_k=5):
         """
         Explains why a movie was recommended based on Item-Based CF.
@@ -165,12 +256,9 @@ class ItemBasedCF:
         # Return Top K
         top_n = valid_neighbors[:top_k]
         
-        # Resolve titles? We have self.movies
+        # Resolve titles efficiently
         for n in top_n:
-            try:
-                title = self.movies.loc[self.movies['movieId'] == n['id'], 'title'].values[0]
-            except:
-                title = f"Movie {n['id']}"
+            title = self.title_lookup.get(n['id'], f"Movie {n['id']}")
                 
             explanation['neighbors'].append({
                 'id': n['id'],

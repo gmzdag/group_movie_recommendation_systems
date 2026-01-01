@@ -49,6 +49,98 @@ def get_models():
     return _models_cache
 
 
+def _save_top10_csv(recommendations: List[Dict], user_ids: List[int]):
+    """
+    Saves top 10 recommendations to a CSV file in the reports directory.
+    Includes comprehensive explanations for analysis.
+    """
+    try:
+        import csv
+        import os
+        from datetime import datetime
+        
+        # Create reports directory if it doesn't exist
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        reports_dir = os.path.join(base_dir, "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        
+        # Generate filename with timestamp and group info
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        users_str = "_".join(map(str, user_ids))
+        filename = f"recommendation_top10_group_{users_str}_{timestamp}.csv"
+        filepath = os.path.join(reports_dir, filename)
+        
+        with open(filepath, mode='w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            # Header
+            writer.writerow([
+                'Rank', 
+                'Movie ID', 
+                'Title', 
+                'Group Score', 
+                'Source Model', 
+                'Signal Source',
+                'Group Explanation', 
+                'Individual User Explanations'
+            ])
+            
+            for idx, rec in enumerate(recommendations, 1):
+                # Format user explanations into a single readable string
+                user_expl_str = ""
+                if rec.get('user_explanations'):
+                    parts = []
+                    for uid, expl_data in rec['user_explanations'].items():
+                        # Handle different explanation formats (dict or string)
+                        if isinstance(expl_data, dict):
+                            # Try to get the most relevant text
+                            text = expl_data.get('primary_reason', '')
+                            if not text:
+                                text = str(expl_data)
+                        else:
+                            text = str(expl_data)
+                        parts.append(f"[User {uid}]: {text}")
+                    user_expl_str = " | ".join(parts)
+                
+                # Improved Signal Source Extraction
+                original_source = rec.get('signal_source', '')
+                final_source = original_source
+                
+                # If top-level source is missing or Unknown, try to dig it from explanations
+                if not final_source or final_source == 'Unknown':
+                    found_sources = []
+                    if rec.get('user_explanations'):
+                        for uid, expl_data in rec['user_explanations'].items():
+                            if isinstance(expl_data, dict):
+                                src = expl_data.get('signal_source')
+                                if src and src != 'Unknown':
+                                    found_sources.append(src)
+                    
+                    if found_sources:
+                        # Use the most common source found in explanations
+                        from collections import Counter
+                        final_source = Counter(found_sources).most_common(1)[0][0]
+                
+                writer.writerow([
+                    idx,
+                    rec.get('movie_id', ''),
+                    rec.get('title', ''),
+                    rec.get('group_score', 0),
+                    rec.get('source_model', ''),
+                    final_source, # Updated source
+                    rec.get('group_explanation', ''),
+                    user_expl_str
+                ])
+                
+        print(f"[INFO] Saved Top 10 recommendations to: {filepath}")
+        return filepath
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to save CSV report: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 @router.post("/group")
 async def generate_group_recommendation(request: GroupRecommendationRequest):
     """
@@ -111,6 +203,10 @@ async def generate_group_recommendation(request: GroupRecommendationRequest):
             return obj
         
         output = clean_nan(output)
+        
+        # 5. NEW: Auto-save Top 10 to CSV
+        if output.get('section_a_top_recommendations'):
+            _save_top10_csv(output['section_a_top_recommendations'], request.user_ids)
         
         # Return exact dictionary matched to Pydantic model implicitly
         return output
