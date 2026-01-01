@@ -288,7 +288,7 @@ def create_roc_plot(theme='dark'):
     ax.set_aspect('equal', adjustable='box')
     
     plt.tight_layout()
-    results_dir = Path(__file__).parent / "results"
+    results_dir = Path(__file__).parent / "results" / "hybrid"
     plt.savefig(results_dir / f'hybrid_models_roc{suffix}.svg', 
                format='svg', dpi=300, facecolor=bg_color)
     print(f"\n✓ {theme} theme: hybrid_models_roc{suffix}.svg")

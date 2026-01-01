@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 
 # Read the IBCF results
-results_dir = Path(__file__).parent / "results"
+results_dir = Path(__file__).parent / "results" / "item_based_cf"
 df = pd.read_csv(results_dir / "itemcf_results.csv")
 
 # Filter for cosine similarity only

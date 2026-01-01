@@ -13,7 +13,7 @@ plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette("husl")
 
 # Read the results
-results_df = pd.read_csv('results/hybrid1_optimized_results.csv')
+results_df = pd.read_csv('results/hybrid/hybrid1_optimized_results.csv')
 
 # Create figure with multiple subplots
 fig = plt.figure(figsize=(16, 10))
@@ -119,7 +119,7 @@ fig.suptitle('Hybrid Model 1: Comprehensive Optimization Analysis\nGroup NDCG@10
 plt.tight_layout(rect=[0, 0, 1, 0.98])
 
 # Save the figure
-plt.savefig('results/hybrid1_optimization_analysis.png', dpi=300, bbox_inches='tight')
+plt.savefig('results/hybrid/hybrid1_optimization_analysis.png', dpi=300, bbox_inches='tight')
 print("✓ Saved: results/hybrid1_optimization_analysis.png")
 
 # ============================================================

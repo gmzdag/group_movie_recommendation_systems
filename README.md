@@ -194,6 +194,13 @@ group_movie_recommendation_systems/
 │   │   ├── 📂 optimization/         # Parameter optimization
 │   │   ├── 📂 evaluation/           # Model evaluation
 │   │   ├── 📂 visualization/        # Result visualization
+│   │   ├── 📂 results/              # Experiment results & plots
+│   │   │   ├── 📂 item_based_cf/    # ItemCF findings
+│   │   │   ├── 📂 user_based_cf/    # UBCF findings
+│   │   │   ├── 📂 hybrid/           # Hybrid model optimization
+│   │   │   ├── 📂 watchlist/        # Watchlist evaluations
+│   │   │   ├── 📂 comparison/       # Cross-model comparisons
+│   │   │   └── 📂 scripts/          # Visualization scripts
 │   │   ├── 📂 single_models/        # Individual model tests
 │   │   ├── 📂 archive/              # Legacy scripts
 │   │   └── evaluation_config.py     # Evaluation configuration

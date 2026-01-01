@@ -428,7 +428,7 @@ if __name__ == "__main__":
         test_ndcg = test_metrics['NDCG']
         print(f"FINAL TEST NDCG@10: {test_ndcg:.4f}")
         
-        RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
+        RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results", "item_based_cf")
         os.makedirs(RESULTS_DIR, exist_ok=True)
         
         with open(os.path.join(RESULTS_DIR, "itemcf_final_report.txt"), "w") as f:

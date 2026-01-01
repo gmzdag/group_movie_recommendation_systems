@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Read the data
-df = pd.read_csv('results/itemcf_results.csv')
+df = pd.read_csv('results/item_based_cf/itemcf_results.csv')
 
 # Set professional style
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -70,8 +70,8 @@ ax.annotate(f'Best: NDCG={best_row["NDCG"]:.4f}\n(Z-Score+Cosine, k={int(best_ro
 ax.set_ylim(0.05, 0.22)
 
 plt.tight_layout()
-plt.savefig('results/itemcf_comprehensive_comparison.svg', dpi=300, bbox_inches='tight')
-plt.savefig('results/itemcf_comprehensive_comparison.png', dpi=300, bbox_inches='tight')
+plt.savefig('results/item_based_cf/itemcf_comprehensive_comparison.svg', dpi=300, bbox_inches='tight')
+plt.savefig('results/item_based_cf/itemcf_comprehensive_comparison.png', dpi=300, bbox_inches='tight')
 print("✓ Comprehensive comparison plot saved")
 
 # ===== BONUS: Create a heatmap for best k per configuration =====
@@ -122,8 +122,8 @@ cbar = plt.colorbar(im, ax=ax2)
 cbar.set_label('NDCG@10', rotation=270, labelpad=20, fontsize=12, fontweight='bold')
 
 plt.tight_layout()
-plt.savefig('results/itemcf_heatmap_comparison.svg', dpi=300, bbox_inches='tight')
-plt.savefig('results/itemcf_heatmap_comparison.png', dpi=300, bbox_inches='tight')
+plt.savefig('results/item_based_cf/itemcf_heatmap_comparison.svg', dpi=300, bbox_inches='tight')
+plt.savefig('results/item_based_cf/itemcf_heatmap_comparison.png', dpi=300, bbox_inches='tight')
 print("✓ Heatmap comparison saved")
 
 # ===== Print Summary Statistics =====

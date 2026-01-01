@@ -332,8 +332,8 @@ def run_evaluation():
     )
     
     # Results Directories
-    results_dir = os.path.join(os.path.dirname(__file__), "results")
-    graphs_dir = os.path.join(results_dir, "graphs")
+    results_dir = os.path.join(os.path.dirname(__file__), "..", "results")
+    graphs_dir = os.path.join(results_dir, "comparison")
     os.makedirs(graphs_dir, exist_ok=True)
     
     # ==========================================================
@@ -437,7 +437,7 @@ def run_evaluation():
         }
     }
     
-    output_path = os.path.join(results_dir, "scientific_analysis_results.json")
+    output_path = os.path.join(graphs_dir, "scientific_analysis_results.json")
     with open(output_path, 'w') as f:
         json.dump(final_output, f, indent=4)
         

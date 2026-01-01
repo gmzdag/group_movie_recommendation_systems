@@ -3,10 +3,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Read the comprehensive optimization data
-df_comp = pd.read_csv('watchlist_comprehensive_optimization.csv')
+df_comp = pd.read_csv('../watchlist/watchlist_comprehensive_optimization.csv')
 
 # Read the master group data
-df_master = pd.read_csv('watchlist_master_group.csv')
+df_master = pd.read_csv('../watchlist/watchlist_master_group.csv')
 
 print("="*60)
 print("WATCHLIST OPTIMIZATION RESULTS")
@@ -72,7 +72,7 @@ ax1.set_title('Watchlist-Based Filtering: Group NDCG@10 Heatmap',
               fontsize=16, fontweight='bold', pad=20, color='black')
 
 plt.tight_layout()
-plt.savefig('watchlist_optimization_heatmap_white.svg', format='svg', bbox_inches='tight')
+plt.savefig('../watchlist/watchlist_optimization_heatmap_white.svg', format='svg', bbox_inches='tight')
 print("\n✓ Saved: watchlist_optimization_heatmap_white.svg")
 
 # ============================================================================
@@ -129,7 +129,7 @@ for bars in [bars1, bars2]:
                 ha='center', va='bottom', fontsize=9, fontweight='bold')
 
 plt.tight_layout()
-plt.savefig('watchlist_strategy_comparison.svg', format='svg', bbox_inches='tight')
+plt.savefig('../watchlist/watchlist_strategy_comparison.svg', format='svg', bbox_inches='tight')
 print("✓ Saved: watchlist_strategy_comparison.svg")
 
 # ============================================================================
@@ -173,7 +173,7 @@ if len(penalty_data) > 0:
     ax3.legend(lines1 + lines2, labels1 + labels2, loc='best', fontsize=11)
 
 plt.tight_layout()
-plt.savefig('watchlist_penalty_impact.svg', format='svg', bbox_inches='tight')
+plt.savefig('../watchlist/watchlist_penalty_impact.svg', format='svg', bbox_inches='tight')
 print("✓ Saved: watchlist_penalty_impact.svg")
 
 # ============================================================================
@@ -219,7 +219,7 @@ ax4.set_axisbelow(True)
 ax4.tick_params(axis='both', which='major', labelsize=10, colors='black')
 
 plt.tight_layout()
-plt.savefig('watchlist_model_comparison.svg', format='svg', bbox_inches='tight')
+plt.savefig('../watchlist/watchlist_model_comparison.svg', format='svg', bbox_inches='tight')
 print("✓ Saved: watchlist_model_comparison.svg")
 
 # ============================================================================

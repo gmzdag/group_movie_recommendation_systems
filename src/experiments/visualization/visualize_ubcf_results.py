@@ -8,7 +8,7 @@ import numpy as np
 from pathlib import Path
 
 # Read the data
-results_dir = Path(__file__).parent / "results"
+results_dir = Path(__file__).parent / "results" / "user_based_cf"
 df = pd.read_csv(results_dir / "ubcf_grid_search_ndcg.csv")
 
 # Clean data

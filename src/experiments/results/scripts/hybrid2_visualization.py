@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Read the data
-df = pd.read_csv('hybrid2_group_optimization.csv')
+df = pd.read_csv('../hybrid/hybrid2_group_optimization.csv')
 
 # Create a more readable weight column
 df['Weight_Combo'] = df.apply(lambda x: f"{x['w_ubcf']:.2f}/{x['w_cbf']:.2f}", axis=1)
@@ -70,7 +70,7 @@ ax.annotate(f'Best: w={best_row["w_ubcf"]:.2f}/{best_row["w_cbf"]:.2f}\n{best_ro
 plt.tight_layout()
 
 # Save as SVG
-plt.savefig('hybrid2_optimization_visualization.svg', format='svg', bbox_inches='tight')
+plt.savefig('../hybrid/hybrid2_optimization_visualization.svg', format='svg', bbox_inches='tight')
 print("✓ Hybrid2 visualization saved as 'hybrid2_optimization_visualization.svg'")
 
 # Also create a bar chart comparison
@@ -107,7 +107,7 @@ ax2.set_ylim(0.3, 0.45)
 ax2.tick_params(axis='both', which='major', labelsize=11)
 
 plt.tight_layout()
-plt.savefig('hybrid2_bar_comparison.svg', format='svg', bbox_inches='tight')
+plt.savefig('../hybrid/hybrid2_bar_comparison.svg', format='svg', bbox_inches='tight')
 print("✓ Hybrid2 bar comparison saved as 'hybrid2_bar_comparison.svg'")
 
 # Create a heatmap with dark background
@@ -151,7 +151,7 @@ ax3.set_ylabel('Aggregation Strategy', fontsize=14, fontweight='bold', color='wh
 ax3.set_title('Hybrid Model 2: Group NDCG@10 Heatmap', fontsize=16, fontweight='bold', pad=20, color='white')
 
 plt.tight_layout()
-plt.savefig('hybrid2_heatmap.svg', format='svg', bbox_inches='tight')
+plt.savefig('../hybrid/hybrid2_heatmap.svg', format='svg', bbox_inches='tight')
 print("✓ Hybrid2 heatmap saved as 'hybrid2_heatmap.svg'")
 
 # Create a WHITE background version of the heatmap
@@ -192,7 +192,7 @@ ax4.set_ylabel('Aggregation Strategy', fontsize=14, fontweight='bold', color='bl
 ax4.set_title('Hybrid Model 2: Group NDCG@10 Heatmap', fontsize=16, fontweight='bold', pad=20, color='black')
 
 plt.tight_layout()
-plt.savefig('hybrid2_heatmap_white.svg', format='svg', bbox_inches='tight')
+plt.savefig('../hybrid/hybrid2_heatmap_white.svg', format='svg', bbox_inches='tight')
 print("✓ Hybrid2 heatmap (WHITE background) saved as 'hybrid2_heatmap_white.svg'")
 
 # Print summary statistics

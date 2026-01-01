@@ -19,7 +19,7 @@ from recommender.data_loader import load_all_data
 def analyze_overlaps():
     # Define output file
     # results_dir = os.path.join(project_root, "results")
-    results_dir = os.path.join(os.path.dirname(__file__), "..", "results")
+    results_dir = os.path.join(os.path.dirname(__file__), "..", "results", "user_based_cf")
     os.makedirs(results_dir, exist_ok=True)
     output_file = os.path.join(results_dir, "overlap_analysis_results.txt")
     

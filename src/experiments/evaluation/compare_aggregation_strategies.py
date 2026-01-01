@@ -35,7 +35,7 @@ from recommender.data_loader import load_movies, load_watchlists, load_train_val
 from recommender.CB.content_based import ContentBasedModel
 from recommender.hybrid.hybrid_model_3 import WatchlistHybridModel
 
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results", "comparison")
 
 
 # ===== AGGREGATION STRATEGIES =====

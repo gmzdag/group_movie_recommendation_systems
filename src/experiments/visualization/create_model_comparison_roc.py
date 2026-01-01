@@ -347,7 +347,7 @@ def create_roc_plot(theme='dark'):
     ax.set_aspect('equal', adjustable='box')
     
     plt.tight_layout()
-    results_dir = Path(__file__).parent / "results"
+    results_dir = Path(__file__).parent / "results" / "comparison"
     plt.savefig(results_dir / f'model_comparison_roc{suffix}.svg', 
                format='svg', dpi=300, facecolor=bg_color)
     print(f"\n✓ {theme} theme: model_comparison_roc{suffix}.svg")

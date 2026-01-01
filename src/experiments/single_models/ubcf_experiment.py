@@ -27,7 +27,7 @@ from recommender.UBCF.user_based_cf import UserBasedCF
 # Define paths
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 SPLITS_DIR = os.path.join(PROJECT_ROOT, "data", "splits")
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results", "user_based_cf")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # ----------------------------------------------------------------------------
