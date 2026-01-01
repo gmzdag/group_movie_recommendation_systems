@@ -162,19 +162,19 @@ class StructuredOutputGenerator:
         # Section D (NO agent filter - always generate normally)
         section_d = self._generate_section_d(
             group_users, watched_set, section_a, section_b,
-            allowed_ids=None  # Don't apply agent filter to Section D
+            allowed_ids=valid_ids_set  # Apply agent filter
         )
         
         # Section E - Hybrid 1 specific recommendations (NO agent filter)
         section_e = self._generate_section_e(
             group_users, watched_set, section_a, section_b, section_d,
-            allowed_ids=None  # Don't apply agent filter to Section E
+            allowed_ids=valid_ids_set  # Apply agent filter
         )
         
         # Section F - Hybrid 2 specific recommendations (NO agent filter)
         section_f = self._generate_section_f(
             group_users, watched_set, section_a, section_b, section_d,
-            allowed_ids=None  # Don't apply agent filter to Section F
+            allowed_ids=valid_ids_set  # Apply agent filter
         )
         
         # ============================================================================
@@ -526,6 +526,9 @@ class StructuredOutputGenerator:
                  criteria = citation_reasoning.get(mid) if citation_reasoning else None
                  reason_str = f"Matches criteria: {criteria}" if criteria else "Matches your request."
                  
+                 # Get full metadata
+                 metadata = self._get_movie_metadata(mid)
+
                  output.append({
                      'movie_id': mid,
                      'title': self._get_movie_title(mid),
@@ -533,7 +536,21 @@ class StructuredOutputGenerator:
                      'source_model': 'AI_AGENT', 
                      'group_explanation': f"{reason_str}",
                      'signal_source': 'AI_AGENT',
-                     'user_explanations': rec.get('explanations', {})
+                     'user_explanations': rec.get('explanations', {}),
+                     # Metadata fields
+                     'genres': metadata.get('genres'),
+                     'Overview': metadata.get('Overview'),
+                     'overview': metadata.get('overview'),  # Fallback
+                     'Director': metadata.get('Director'),
+                     'director': metadata.get('director'),  # Fallback
+                     'Actors': metadata.get('Actors'),
+                     'actors': metadata.get('actors'),  # Fallback
+                     'Production_Countries': metadata.get('Production_Countries'),
+                     'production_countries': metadata.get('production_countries'),  # Fallback
+                     'release_date': metadata.get('release_date'),
+                     'poster_url': metadata.get('poster_url'),
+                     'backdrop_url': metadata.get('backdrop_url'),
+                     'trailer_url': metadata.get('trailer_url')
                  })
              return output
 
@@ -679,6 +696,9 @@ class StructuredOutputGenerator:
                  criteria = citation_reasoning.get(mid) if citation_reasoning else None
                  reason_str = f"Matches criteria: {criteria}" if criteria else "Matches request"
                  
+                 # Get full metadata
+                 metadata = self._get_movie_metadata(mid)
+
                  output.append({
                      'movie_id': mid,
                      'title': self._get_movie_title(mid),
@@ -686,7 +706,21 @@ class StructuredOutputGenerator:
                      'source_model': 'AI_AGENT',
                      'group_explanation': f"{reason_str}",
                      'signal_source': 'AI_AGENT',
-                     'user_explanations': rec.get('explanations', {})
+                     'user_explanations': rec.get('explanations', {}),
+                     # Metadata fields
+                     'genres': metadata.get('genres'),
+                     'Overview': metadata.get('Overview'),
+                     'overview': metadata.get('overview'),  # Fallback
+                     'Director': metadata.get('Director'),
+                     'director': metadata.get('director'),  # Fallback
+                     'Actors': metadata.get('Actors'),
+                     'actors': metadata.get('actors'),  # Fallback
+                     'Production_Countries': metadata.get('Production_Countries'),
+                     'production_countries': metadata.get('production_countries'),  # Fallback
+                     'release_date': metadata.get('release_date'),
+                     'poster_url': metadata.get('poster_url'),
+                     'backdrop_url': metadata.get('backdrop_url'),
+                     'trailer_url': metadata.get('trailer_url')
                  })
              return output
 

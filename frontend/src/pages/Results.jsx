@@ -365,7 +365,7 @@ function Results() {
 
                         <div style={{ padding: '0 40px', overflowX: 'auto', display: 'flex', gap: '24px', paddingBottom: '20px' }}>
                             {sectionD.map((item, idx) => (
-                                <div key={idx} style={{ minWidth: '280px', position: 'relative', borderRadius: '12px', overflow: 'hidden', aspectRatio: '2/3', cursor: 'pointer', transition: 'transform 0.3s' }}
+                                <div key={idx} style={{ flex: '0 0 240px', position: 'relative', borderRadius: '12px', overflow: 'hidden', aspectRatio: '2/3', cursor: 'pointer', transition: 'transform 0.3s' }}
                                     className="movie-card-hover"
                                     onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
                                     onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}>
@@ -406,7 +406,7 @@ function Results() {
 
                         <div style={{ padding: '0 40px', overflowX: 'auto', display: 'flex', gap: '24px', paddingBottom: '20px' }}>
                             {sectionE.map((item, idx) => (
-                                <div key={idx} style={{ minWidth: '280px', position: 'relative', borderRadius: '12px', overflow: 'hidden', aspectRatio: '2/3', cursor: 'pointer', transition: 'transform 0.3s' }}
+                                <div key={idx} style={{ flex: '0 0 240px', position: 'relative', borderRadius: '12px', overflow: 'hidden', aspectRatio: '2/3', cursor: 'pointer', transition: 'transform 0.3s' }}
                                     className="movie-card-hover"
                                     onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
                                     onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}>
@@ -445,7 +445,7 @@ function Results() {
 
                         <div style={{ padding: '0 40px', overflowX: 'auto', display: 'flex', gap: '24px', paddingBottom: '20px' }}>
                             {sectionF.map((item, idx) => (
-                                <div key={idx} style={{ minWidth: '280px', position: 'relative', borderRadius: '12px', overflow: 'hidden', aspectRatio: '2/3', cursor: 'pointer', transition: 'transform 0.3s' }}
+                                <div key={idx} style={{ flex: '0 0 220px', position: 'relative', borderRadius: '12px', overflow: 'hidden', aspectRatio: '2/3', cursor: 'pointer', transition: 'transform 0.3s' }}
                                     className="movie-card-hover"
                                     onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
                                     onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}>
